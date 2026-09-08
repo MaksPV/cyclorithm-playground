@@ -1,0 +1,98 @@
+//! WASM-обёртка над движком для плейграунда (v1 — визуализатор).
+//!
+//! Один экспорт `expand_it`: исходник + окно + библиотеки (`use` из памяти)
+//! → JSON-конверт `{"ok":true,"result":{...}}` или
+//! `{"ok":false,"diag":{"kind","code","line","col","text"}}`.
+
+use cyclorithm_core::schedule::run_schedule;
+use wasm_bindgen::prelude::*;
+
+/// Развернуть расписание. `libs_json` — `[["путь","текст"],...]`,
+/// путь как в `use` (например `"libs/route_lib.cyclo"`).
+#[wasm_bindgen]
+pub fn expand_it(src: &str, start: &str, end: &str, libs_json: &str) -> String {
+    let libs: Vec<(String, String)> = match serde_json::from_str(libs_json) {
+        Ok(v) => v,
+        Err(e) => {
+            return serde_json::json!({
+                "ok": false,
+                "diag": {"kind": "usage", "code": null, "line": null, "col": null,
+                         "text": format!("bad libs_json: {e}")},
+            })
+            .to_string();
+        }
+    };
+    let refs: Vec<(&str, &str)> = libs
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    match run_schedule(src, start, end, &refs) {
+        Ok(json) => format!("{{\"ok\":true,\"result\":{json}}}"),
+        Err(d) => serde_json::json!({
+            "ok": false,
+            "diag": {"kind": d.kind, "code": d.code, "line": d.line, "col": d.col,
+                     "text": d.text},
+        })
+        .to_string(),
+    }
+}
+
+/// Конверт для тестов (та же строка, что уйдёт в JS).
+pub fn expand_envelope(src: &str, start: &str, end: &str, libs: &[(&str, &str)]) -> String {
+    let owned: Vec<(String, String)> = libs
+        .iter()
+        .map(|(n, t)| ((*n).to_owned(), (*t).to_owned()))
+        .collect();
+    let libs_json = serde_json::to_string(&owned).expect("libs сериализуются");
+    expand_it(src, start, end, &libs_json)
+}
+
+/// Тесты живут только под wasm32 (раннер `wasm-bindgen-test-runner`):
+/// на хосте им нечего исполнять.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    const MINI: &str = r#"schedule "Тест" {
+  point DEPOT {
+    actions = [depart, arrive];
+  }
+
+  cycle HOP
+    duration = 20m
+  {
+    0m: DEPOT.depart();
+    20m: DEPOT.arrive();
+  }
+
+  root_cycle
+    start_time = "2026-01-01T00:00:00",
+    duration = 24h
+  {
+    [not weekend(at)] 6h: HOP();
+  }
+}"#;
+
+    #[wasm_bindgen_test]
+    fn envelope_ok_parses_and_carries_events() {
+        let out = expand_envelope(MINI, "2026-01-09T00:00:00", "2026-01-10T00:00:00", &[]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn envelope_err_carries_diag() {
+        let out = expand_envelope(
+            "schedule {",
+            "2026-01-09T00:00:00",
+            "2026-01-10T00:00:00",
+            &[],
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["diag"]["kind"], "parse");
+        assert_eq!(v["diag"]["line"], 1);
+    }
+}
