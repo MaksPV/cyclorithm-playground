@@ -57,6 +57,14 @@ const tbody = document.getElementById('events');
 
 src.value = DEFAULT_SRC;
 
+// Видимая область (зум/пан), границы стартового окна и границы
+// реально посчитанных данных; обновляются при каждом run().
+let view = null;
+let dataWin = null;
+let fetched = null;
+let lastRes = null;
+let fetchTimer = null;
+
 function parseTime(s) {
   // Наивный ISO8601 без таймзоны — как мс epoch (движок время наивное).
   // Секунды опциональны: datetime-local отдаёт без них.
@@ -99,16 +107,102 @@ function run() {
     errEl.textContent = text;
     return;
   }
-  draw(env.result);
-}
-
-function draw(res) {
-  const t0 = parseTime(windowInput(startEl));
-  const t1 = parseTime(windowInput(endEl));
-  if (!(t0 < t1)) {
+  const w0 = parseTime(windowInput(startEl));
+  const w1 = parseTime(windowInput(endEl));
+  if (!(w0 < w1)) {
     errEl.textContent = 'окно пустое: end должен быть позже start';
     return;
   }
+  dataWin = { t0: w0, t1: w1 };
+  fetched = { t0: w0, t1: w1 };
+  view = { t0: w0, t1: w1 };
+  draw(env.result);
+}
+
+// Докачка: если вид вылез за посчитанное — пересчитать окно
+// view ± 100% запас. Вызывается с дебаунсом после жестов.
+function ensureData() {
+  if (!view || !fetched || !lastRes) return;
+  if (view.t0 >= fetched.t0 && view.t1 <= fetched.t1) return;
+  const span = view.t1 - view.t0;
+  const s = Math.floor((view.t0 - span) / 1000) * 1000;
+  const e = Math.ceil((view.t1 + span) / 1000) * 1000;
+  let env;
+  try {
+    env = JSON.parse(expand_timeline(src.value, formatTime(s), formatTime(e), LIBS));
+  } catch {
+    return;
+  }
+  if (!env.ok) return;
+  fetched = { t0: s, t1: e };
+  draw(env.result);
+}
+
+function scheduleFetch() {
+  clearTimeout(fetchTimer);
+  fetchTimer = setTimeout(ensureData, 300);
+}
+
+function formatTime(ms) {
+  // Границы докачки — с точностью до секунд.
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` +
+    `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+// Шаг линейки: первый, при котором подписи не ближе 70px.
+const STEPS = [60e3, 300e3, 900e3, 3600e3, 3 * 3600e3, 6 * 3600e3, 12 * 3600e3, 86400e3];
+function chooseStep(spanMs, pxPerMs) {
+  for (const s of STEPS) {
+    if (s * pxPerMs >= 70) return s;
+  }
+  return STEPS[STEPS.length - 1];
+}
+
+function tickLabel(ms, step) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  const hm = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+  return step >= 12 * 3600e3 ? `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)} ${hm}` : hm;
+}
+
+function drawRuler(t0, t1, X, W, h) {
+  const pxPerMs = (W - 44 - 10) / (t1 - t0);
+  const step = chooseStep(t1 - t0, pxPerMs);
+  el('line', { x1: 44, x2: W - 10, y1: h, y2: h, stroke: '#999' }, svg);
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    const x = X(t);
+    el('line', { x1: x, x2: x, y1: h - 8, y2: h, stroke: '#999' }, svg);
+    const label = el('text', { x: x + 3, y: h - 10, 'font-size': 10, fill: '#555' }, svg);
+    label.textContent = tickLabel(t, step);
+  }
+  const minor = step / 5;
+  if (minor * pxPerMs >= 4) {
+    for (let t = Math.ceil(t0 / minor) * minor; t <= t1; t += minor) {
+      if (t % step === 0) continue;
+      const x = X(t);
+      el('line', { x1: x, x2: x, y1: h - 4, y2: h, stroke: '#bbb' }, svg);
+    }
+  }
+  // Верхний уровень — даты: подпись на каждой полуночи UTC в виде.
+  const day = 86400e3;
+  for (let t = Math.ceil(t0 / day) * day; t <= t1; t += day) {
+    const x = X(t);
+    el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#999' }, svg);
+    const d = new Date(t);
+    const p = (n) => String(n).padStart(2, '0');
+    const label = el('text', { x: x + 3, y: 10, 'font-size': 10, fill: '#333' }, svg);
+    label.textContent = `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)}`;
+  }
+}
+
+function draw(res) {
+  lastRes = res;
+  // Очистка здесь, а не только в run(): redraw при зуме/пане тоже идёт сюда.
+  svg.innerHTML = '';
+  tbody.innerHTML = '';
+  const { t0, t1 } = view;
   // Раскладка как в монтаже: блоки идут по старту, каждый — на первую
   // дорожку, где он не пересекается с последним блоком.
   const ends = []; // конец последнего блока на дорожке, мс
@@ -124,24 +218,29 @@ function draw(res) {
     trackOf.set(s.cycle + '|' + s.start + '|' + s.end, ti);
   }
   const ntracks = ends.length;
-  const W = 1000, LABEL = 44, LANE_H = 40, PAD = 10;
-  const H = Math.max(ntracks, 1) * LANE_H + PAD * 2;
+  const W = 1000, LABEL = 44, LANE_H = 40, PAD = 10, RULER_H = 30;
+  const H = RULER_H + PAD + Math.max(ntracks, 1) * LANE_H + PAD;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const X = (t) => LABEL + ((t - t0) / (t1 - t0)) * (W - LABEL - PAD);
+  const Y = (ti) => RULER_H + PAD + ti * LANE_H;
+  drawRuler(t0, t1, X, W, RULER_H);
   for (let ti = 0; ti < ntracks; ti++) {
-    const y = PAD + ti * LANE_H;
+    const y = Y(ti);
     const label = el('text', { x: 4, y: y + LANE_H / 2 + 4, 'font-size': 12 }, svg);
     label.textContent = 'T' + (ti + 1);
     el('line', { x1: LABEL, x2: W - PAD, y1: y + LANE_H, y2: y + LANE_H, stroke: '#ddd' }, svg);
   }
+  const clipX = (t) => Math.min(Math.max(X(t), LABEL), W - PAD);
   for (const s of res.spans) {
     const ti = trackOf.get(s.cycle + '|' + s.start + '|' + s.end);
-    const y = PAD + ti * LANE_H;
+    const y = Y(ti);
     const root = s.cycle === 'root_cycle';
+    const x0 = clipX(parseTime(s.start)), x1 = clipX(parseTime(s.end));
+    if (x1 <= LABEL || x0 >= W - PAD) continue;
     const r = el('rect', {
-      x: Math.max(X(parseTime(s.start)), LABEL),
+      x: x0,
       y: y + 5,
-      width: Math.max(X(parseTime(s.end)) - X(parseTime(s.start)), 3),
+      width: Math.max(x1 - x0, 3),
       height: LANE_H - 10,
       rx: 3,
       fill: root ? '#eee' : '#cde6ff',
@@ -149,10 +248,24 @@ function draw(res) {
     }, svg);
     const title = el('title', {}, r);
     title.textContent = `${s.cycle} ${s.start} — ${s.end}`;
+    // Подпись цикла — только если блок достаточно широк (мелкий шрифт).
+    if (x1 - x0 >= s.cycle.length * 6 + 8) {
+      const name = el('text', { x: x0 + 4, y: y + LANE_H / 2 + 3, 'font-size': 10, fill: '#333' }, svg);
+      name.textContent = s.cycle;
+    }
   }
-  for (const e of res.events) {
+  // Подписи действий у точек — только если не слипаются с соседом.
+  let lastLabelX = -Infinity;
+  // Таблица — только видимые события (данные могут быть шире вида).
+  const inView = res.events.filter((e) => {
+    const t = parseTime(e.time);
+    return t >= t0 && t < t1;
+  });
+  for (const e of inView) {
     const ti = trackOf.get(e.span.cycle + '|' + e.span.start + '|' + e.span.end);
-    const y = PAD + (ti === undefined ? 0 : ti) * LANE_H + LANE_H / 2;
+    const x = X(parseTime(e.time));
+    if (x < LABEL || x > W - PAD) continue;
+    const y = Y(ti === undefined ? 0 : ti) + LANE_H / 2;
     const c = el('circle', {
       cx: X(parseTime(e.time)), cy: y, r: 5,
       fill: e.action === 'depart' ? '#0a0' : e.action === 'arrive' ? '#06c' : '#888',
@@ -160,6 +273,11 @@ function draw(res) {
     }, svg);
     const title = el('title', {}, c);
     title.textContent = `${e.time} ${e.action} ${e.point} [${e.span.cycle}]`;
+    if (x - lastLabelX >= 55) {
+      const lab = el('text', { x: x + 7, y: y + 3, 'font-size': 9, fill: '#333' }, svg);
+      lab.textContent = e.action;
+      lastLabelX = x;
+    }
     const tr = document.createElement('tr');
     for (const k of ['time', 'action', 'point']) {
       const td = document.createElement('td');
@@ -168,6 +286,97 @@ function draw(res) {
     }
     tbody.appendChild(tr);
   }
+}
+
+// Навигация: колесо — зум к курсору, shift+колесо — скролл,
+// drag — пан, двойной клик — сброс к окну. Вид бесконечный, данные
+// докачиваются дебаунсом после жеста. Единственный предел —
+// минимальный масштаб (минута).
+const MIN_SPAN = 60e3;
+function normView() {
+  const c = (view.t0 + view.t1) / 2;
+  const s = Math.max(view.t1 - view.t0, MIN_SPAN);
+  view = { t0: c - s / 2, t1: c + s / 2 };
+}
+
+// Применить жест: мгновенная трансформация + отложенная докачка.
+function navigate(mut) {
+  if (!view || !lastRes) return;
+  mut();
+  normView();
+  redraw();
+  scheduleFetch();
+}
+
+function redraw() {
+  if (lastRes) draw(lastRes);
+}
+
+function svgMs(clientX) {
+  const rect = svg.getBoundingClientRect();
+  const W = 1000;
+  const x = (clientX - rect.left) * (W / rect.width);
+  return view.t0 + ((x - 44) / (W - 44 - 10)) * (view.t1 - view.t0);
+}
+
+function zoomAt(clientX, dir) {
+  const anchor = svgMs(clientX);
+  const f = dir > 0 ? 1.25 : 1 / 1.25;
+  navigate(() => {
+    const span = (view.t1 - view.t0) * f;
+    const k = (anchor - view.t0) / (view.t1 - view.t0);
+    view = { t0: anchor - span * k, t1: anchor + span * (1 - k) };
+  });
+}
+
+function initNav() {
+  svg.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    if (!view || !lastRes) return;
+    if (ev.shiftKey) {
+      const dx = ev.deltaY * ((view.t1 - view.t0) / 500);
+      navigate(() => {
+        view = { t0: view.t0 + dx, t1: view.t1 + dx };
+      });
+    } else {
+      zoomAt(ev.clientX, ev.deltaY);
+    }
+  }, { passive: false });
+  let x0 = null;
+  svg.addEventListener('mousedown', (ev) => { ev.preventDefault(); x0 = ev.clientX; });
+  svg.addEventListener('mousemove', (ev) => {
+    if (x0 === null || !view || !lastRes) return;
+    const rect = svg.getBoundingClientRect();
+    const dx = (ev.clientX - x0) * ((view.t1 - view.t0) / rect.width);
+    x0 = ev.clientX;
+    navigate(() => {
+      view = { t0: view.t0 - dx, t1: view.t1 - dx };
+    });
+  });
+  svg.addEventListener('mouseup', () => { x0 = null; });
+  svg.addEventListener('mouseleave', () => { x0 = null; });
+  svg.addEventListener('dblclick', () => {
+    navigate(() => {
+      view = { t0: dataWin.t0, t1: dataWin.t1 };
+    });
+  });
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    navigate(() => {
+      const c = (view.t0 + view.t1) / 2;
+      view = { t0: c - (c - view.t0) / 1.5, t1: c + (view.t1 - c) / 1.5 };
+    });
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    navigate(() => {
+      const c = (view.t0 + view.t1) / 2;
+      view = { t0: c - (c - view.t0) * 1.5, t1: c + (view.t1 - c) * 1.5 };
+    });
+  });
+  document.getElementById('zoom-reset').addEventListener('click', () => {
+    navigate(() => {
+      view = { t0: dataWin.t0, t1: dataWin.t1 };
+    });
+  });
 }
 
 // Выделить строку с ошибкой в редакторе (v1-подсветка синтаксиса).
@@ -183,6 +392,7 @@ function selectLine(n) {
 document.getElementById('run').addEventListener('click', run);
 startEl.addEventListener('change', run);
 endEl.addEventListener('change', run);
+initNav();
 
 await init();
 run();
