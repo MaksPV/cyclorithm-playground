@@ -57,6 +57,22 @@ const tbody = document.getElementById('events');
 
 src.value = DEFAULT_SRC;
 
+// Окно по умолчанию — сегодня/завтра (UTC-день: движок наивный, parseTime
+// считает ввод через Date.UTC). Вшитые в HTML январские даты протухают,
+// как только в редактор вставляют неянварское расписание (ноль событий
+// при живом движке) — поэтому дефолт всегда динамический.
+{
+  const now = new Date(Date.now());
+  const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const p = (n) => String(n).padStart(2, '0');
+  const iso = (ms) => {
+    const d = new Date(ms);
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T00:00`;
+  };
+  startEl.value = iso(day);
+  endEl.value = iso(day + 86400e3);
+}
+
 // Видимая область (зум/пан), границы стартового окна и границы
 // реально посчитанных данных; обновляются при каждом run().
 let view = null;
@@ -272,7 +288,12 @@ function draw(res) {
       stroke: '#fff',
     }, svg);
     const title = el('title', {}, c);
-    title.textContent = `${e.time} ${e.action} ${e.point} [${e.span.cycle}]`;
+    const attrsText = [e.point_attrs, e.action_attrs]
+      .map((a) => JSON.stringify(a))
+      .filter((s) => s !== '{}')
+      .join(' ');
+    title.textContent = `${e.time} ${e.action} ${e.point} [${e.span.cycle}]` +
+      (attrsText ? ` ${attrsText}` : '');
     if (x - lastLabelX >= 55) {
       const lab = el('text', { x: x + 7, y: y + 3, 'font-size': 9, fill: '#333' }, svg);
       lab.textContent = e.action;
@@ -282,6 +303,12 @@ function draw(res) {
     for (const k of ['time', 'action', 'point']) {
       const td = document.createElement('td');
       td.textContent = e[k];
+      tr.appendChild(td);
+    }
+    for (const k of ['point_attrs', 'action_attrs']) {
+      const td = document.createElement('td');
+      td.textContent = JSON.stringify(e[k]);
+      td.style.fontSize = '11px';
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
