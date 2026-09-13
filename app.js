@@ -1,4 +1,9 @@
 import init, { expand_timeline } from './pkg/playground.js';
+import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, keymap, Decoration } from '@codemirror/view';
+import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { StreamLanguage, syntaxHighlighting, defaultHighlightStyle, HighlightStyle } from '@codemirror/language';
+import { history, defaultKeymap, historyKeymap } from '@codemirror/commands';
+import { tags } from '@lezer/highlight';
 
 const DEFAULT_SRC = `use "libs/route_lib.cyclo";
 
@@ -47,15 +52,122 @@ const LIBS = JSON.stringify([
   ["libs/route_lib.cyclo", "const MORNING = 6;\n\npred commute(at) = morning(at) or evening(at);\n"],
 ]);
 
+// --- подсветка cyclo (зеркало cyclo_lexer.py / grammar.pest) ---
+const DECLARATION = new Set(["schedule","use","const","fun","pred","time_const","point","actions","attrs","cycle","routine","root_cycle","start_time","duration","reverse"]);
+const MODIFIER = new Set(["repeat","fill","until","gaps","and","or","not","floordiv","floormod"]);
+const BOOL = new Set(["true","false"]);
+
+const cycloLanguage = StreamLanguage.define({
+  token(stream, state) {
+    if (state.inString) {
+      let escaped = false;
+      while (!stream.eol()) {
+        const ch = stream.next();
+        if (ch === '"' && !escaped) { state.inString = false; break; }
+        escaped = ch === '\\' && !escaped;
+      }
+      return "string";
+    }
+    if (stream.eatSpace()) return null;
+    if (stream.match("//")) { stream.skipToEnd(); return "comment"; }
+    if (stream.match('"')) { state.inString = true; return "string"; }
+    if (stream.match(/^\d+(?:st|nd|rd|th)\b/)) return "labelName";
+    if (stream.match(/^-?\d+(?:\.\d+)?(?:ms|[smhdw])/)) return "number";
+    if (stream.match(/^-?\d+(?:\.\d+)?\b/)) return "number";
+    if (stream.match(/^\.[A-Za-z_][A-Za-z0-9_]*/)) return "variableName";
+    if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
+      const cur = stream.current();
+      if (DECLARATION.has(cur) || MODIFIER.has(cur)) return "keyword";
+      if (BOOL.has(cur)) return "bool";
+      if (/^[A-Z_][A-Z0-9_]*$/.test(cur)) {
+        const rest = stream.string.slice(stream.pos);
+        if (/^\s*\(/.test(rest)) return "function";
+        return "typeName";
+      }
+      const rest = stream.string.slice(stream.pos);
+      if (/^\s*\(/.test(rest)) return "function";
+      return "variableName";
+    }
+    if (stream.match(/^(==|!=|<=|>=|<<|>>)/)) return "operator";
+    if (stream.match(/^[-+*/%<>|&^!=]/)) return "operator";
+    if (stream.match(/^[:;,.\(\)\{\}\[\]]/)) return "punctuation";
+    stream.next();
+    return null;
+  },
+  startState() { return { inString: false }; }
+});
+
+const cycloHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: "#0000ff" },
+  { tag: tags.comment, color: "#008000", fontStyle: "italic" },
+  { tag: tags.string, color: "#a31515" },
+  { tag: tags.number, color: "#098658" },
+  { tag: tags.bool, color: "#0000ff", fontWeight: "bold" },
+  { tag: tags.labelName, color: "#795e26" },
+  { tag: tags.typeName, color: "#267f99" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.typeName)], color: "#795e26" },
+  { tag: tags.variableName, color: "#001080" },
+  { tag: tags.operator, color: "#000000" },
+  { tag: tags.punctuation, color: "#000000" },
+]);
+
+const errorLineEffect = StateEffect.define();
+const errorLineField = StateField.define({
+  create() { return Decoration.none; },
+  update(deco, tr) {
+    for (const e of tr.effects) if (e.is(errorLineEffect)) {
+      if (e.value == null) return Decoration.none;
+      const line = tr.state.doc.line(e.value);
+      return Decoration.set([Decoration.line({ attributes: { class: "cm-errorLine" } }).range(line.from)]);
+    }
+    if (tr.docChanged) return Decoration.none;
+    return deco.map(tr.changes);
+  },
+  provide: f => EditorView.decorations.from(f)
+});
+
 const NS = 'http://www.w3.org/2000/svg';
-const src = document.getElementById('src');
 const startEl = document.getElementById('start');
 const endEl = document.getElementById('end');
 const errEl = document.getElementById('error');
 const svg = document.getElementById('timeline');
 const tbody = document.getElementById('events');
 
-src.value = DEFAULT_SRC;
+const editor = new EditorView({
+  state: EditorState.create({
+    doc: DEFAULT_SRC,
+    extensions: [
+      lineNumbers(),
+      highlightActiveLineGutter(),
+      highlightActiveLine(),
+      history(),
+      keymap.of([...defaultKeymap, ...historyKeymap]),
+      EditorView.lineWrapping,
+      cycloLanguage,
+      syntaxHighlighting(cycloHighlight),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      errorLineField,
+    ]
+  }),
+  parent: document.getElementById('editor')
+});
+
+function getSrc() { return editor.state.doc.toString(); }
+
+function selectLine(n) {
+  if (n < 1 || n > editor.state.doc.lines) return;
+  const line = editor.state.doc.line(n);
+  editor.dispatch({
+    selection: { anchor: line.from, head: line.to },
+    effects: errorLineEffect.of(n),
+    scrollIntoView: true
+  });
+  editor.focus();
+}
+
+function clearErrorLine() {
+  editor.dispatch({ effects: errorLineEffect.of(null) });
+}
 
 // Окно по умолчанию — сегодня/завтра (UTC-день: движок наивный, parseTime
 // считает ввод через Date.UTC). Вшитые в HTML январские даты протухают,
@@ -75,7 +187,7 @@ src.value = DEFAULT_SRC;
 
 // Видимая область (зум/пан), границы стартового окна и границы
 // реально посчитанных данных; обновляются при каждом run().
-let view = null;
+let tView = null;
 let dataWin = null;
 let fetched = null;
 let lastRes = null;
@@ -104,11 +216,12 @@ function el(name, attrs, parent) {
 
 function run() {
   errEl.textContent = '';
+  clearErrorLine();
   tbody.innerHTML = '';
   svg.innerHTML = '';
   let env;
   try {
-    env = JSON.parse(expand_timeline(src.value, windowInput(startEl), windowInput(endEl), LIBS));
+    env = JSON.parse(expand_timeline(getSrc(), windowInput(startEl), windowInput(endEl), LIBS));
   } catch (e) {
     errEl.textContent = 'клей WASM: ' + e;
     return;
@@ -131,21 +244,21 @@ function run() {
   }
   dataWin = { t0: w0, t1: w1 };
   fetched = { t0: w0, t1: w1 };
-  view = { t0: w0, t1: w1 };
+  tView = { t0: w0, t1: w1 };
   draw(env.result);
 }
 
 // Докачка: если вид вылез за посчитанное — пересчитать окно
 // view ± 100% запас. Вызывается с дебаунсом после жестов.
 function ensureData() {
-  if (!view || !fetched || !lastRes) return;
-  if (view.t0 >= fetched.t0 && view.t1 <= fetched.t1) return;
-  const span = view.t1 - view.t0;
-  const s = Math.floor((view.t0 - span) / 1000) * 1000;
-  const e = Math.ceil((view.t1 + span) / 1000) * 1000;
+  if (!tView || !fetched || !lastRes) return;
+  if (tView.t0 >= fetched.t0 && tView.t1 <= fetched.t1) return;
+  const span = tView.t1 - tView.t0;
+  const s = Math.floor((tView.t0 - span) / 1000) * 1000;
+  const e = Math.ceil((tView.t1 + span) / 1000) * 1000;
   let env;
   try {
-    env = JSON.parse(expand_timeline(src.value, formatTime(s), formatTime(e), LIBS));
+    env = JSON.parse(expand_timeline(getSrc(), formatTime(s), formatTime(e), LIBS));
   } catch {
     return;
   }
@@ -218,7 +331,7 @@ function draw(res) {
   // Очистка здесь, а не только в run(): redraw при зуме/пане тоже идёт сюда.
   svg.innerHTML = '';
   tbody.innerHTML = '';
-  const { t0, t1 } = view;
+  const { t0, t1 } = tView;
   // Раскладка как в монтаже: блоки идут по старту, каждый — на первую
   // дорожку, где он не пересекается с последним блоком.
   const ends = []; // конец последнего блока на дорожке, мс
@@ -321,14 +434,14 @@ function draw(res) {
 // минимальный масштаб (минута).
 const MIN_SPAN = 60e3;
 function normView() {
-  const c = (view.t0 + view.t1) / 2;
-  const s = Math.max(view.t1 - view.t0, MIN_SPAN);
-  view = { t0: c - s / 2, t1: c + s / 2 };
+  const c = (tView.t0 + tView.t1) / 2;
+  const s = Math.max(tView.t1 - tView.t0, MIN_SPAN);
+  tView = { t0: c - s / 2, t1: c + s / 2 };
 }
 
 // Применить жест: мгновенная трансформация + отложенная докачка.
 function navigate(mut) {
-  if (!view || !lastRes) return;
+  if (!tView || !lastRes) return;
   mut();
   normView();
   redraw();
@@ -343,27 +456,27 @@ function svgMs(clientX) {
   const rect = svg.getBoundingClientRect();
   const W = 1000;
   const x = (clientX - rect.left) * (W / rect.width);
-  return view.t0 + ((x - 44) / (W - 44 - 10)) * (view.t1 - view.t0);
+  return tView.t0 + ((x - 44) / (W - 44 - 10)) * (tView.t1 - tView.t0);
 }
 
 function zoomAt(clientX, dir) {
   const anchor = svgMs(clientX);
   const f = dir > 0 ? 1.25 : 1 / 1.25;
   navigate(() => {
-    const span = (view.t1 - view.t0) * f;
-    const k = (anchor - view.t0) / (view.t1 - view.t0);
-    view = { t0: anchor - span * k, t1: anchor + span * (1 - k) };
+    const span = (tView.t1 - tView.t0) * f;
+    const k = (anchor - tView.t0) / (tView.t1 - tView.t0);
+    tView = { t0: anchor - span * k, t1: anchor + span * (1 - k) };
   });
 }
 
 function initNav() {
   svg.addEventListener('wheel', (ev) => {
     ev.preventDefault();
-    if (!view || !lastRes) return;
+    if (!tView || !lastRes) return;
     if (ev.shiftKey) {
-      const dx = ev.deltaY * ((view.t1 - view.t0) / 500);
+      const dx = ev.deltaY * ((tView.t1 - tView.t0) / 500);
       navigate(() => {
-        view = { t0: view.t0 + dx, t1: view.t1 + dx };
+        tView = { t0: tView.t0 + dx, t1: tView.t1 + dx };
       });
     } else {
       zoomAt(ev.clientX, ev.deltaY);
@@ -372,48 +485,38 @@ function initNav() {
   let x0 = null;
   svg.addEventListener('mousedown', (ev) => { ev.preventDefault(); x0 = ev.clientX; });
   svg.addEventListener('mousemove', (ev) => {
-    if (x0 === null || !view || !lastRes) return;
+    if (x0 === null || !tView || !lastRes) return;
     const rect = svg.getBoundingClientRect();
-    const dx = (ev.clientX - x0) * ((view.t1 - view.t0) / rect.width);
+    const dx = (ev.clientX - x0) * ((tView.t1 - tView.t0) / rect.width);
     x0 = ev.clientX;
     navigate(() => {
-      view = { t0: view.t0 - dx, t1: view.t1 - dx };
+      tView = { t0: tView.t0 - dx, t1: tView.t1 - dx };
     });
   });
   svg.addEventListener('mouseup', () => { x0 = null; });
   svg.addEventListener('mouseleave', () => { x0 = null; });
   svg.addEventListener('dblclick', () => {
     navigate(() => {
-      view = { t0: dataWin.t0, t1: dataWin.t1 };
+      tView = { t0: dataWin.t0, t1: dataWin.t1 };
     });
   });
   document.getElementById('zoom-in').addEventListener('click', () => {
     navigate(() => {
-      const c = (view.t0 + view.t1) / 2;
-      view = { t0: c - (c - view.t0) / 1.5, t1: c + (view.t1 - c) / 1.5 };
+      const c = (tView.t0 + tView.t1) / 2;
+      tView = { t0: c - (c - tView.t0) / 1.5, t1: c + (tView.t1 - c) / 1.5 };
     });
   });
   document.getElementById('zoom-out').addEventListener('click', () => {
     navigate(() => {
-      const c = (view.t0 + view.t1) / 2;
-      view = { t0: c - (c - view.t0) * 1.5, t1: c + (view.t1 - c) * 1.5 };
+      const c = (tView.t0 + tView.t1) / 2;
+      tView = { t0: c - (c - tView.t0) * 1.5, t1: c + (tView.t1 - c) * 1.5 };
     });
   });
   document.getElementById('zoom-reset').addEventListener('click', () => {
     navigate(() => {
-      view = { t0: dataWin.t0, t1: dataWin.t1 };
+      tView = { t0: dataWin.t0, t1: dataWin.t1 };
     });
   });
-}
-
-// Выделить строку с ошибкой в редакторе (v1-подсветка синтаксиса).
-function selectLine(n) {
-  const lines = src.value.split('\n');
-  if (n < 1 || n > lines.length) return;
-  let off = 0;
-  for (let i = 0; i < n - 1; i++) off += lines[i].length + 1;
-  src.focus();
-  src.setSelectionRange(off, off + lines[n - 1].length);
 }
 
 document.getElementById('run').addEventListener('click', run);

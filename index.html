@@ -4,6 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cyclorithm — плейграунд</title>
+<script src="https://esm.sh/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "codemirror": "https://esm.sh/codemirror@6.0.1",
+    "@codemirror/view": "https://esm.sh/@codemirror/view@6.36.5",
+    "@codemirror/state": "https://esm.sh/@codemirror/state@6.5.2",
+    "@codemirror/language": "https://esm.sh/@codemirror/language@6.11.0",
+    "@codemirror/commands": "https://esm.sh/@codemirror/commands@6.8.1",
+    "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6.16.0",
+    "@lezer/highlight": "https://esm.sh/@lezer/highlight@1.2.1"
+  }
+}
+</script>
 <style>
   html, body { height: 100%; }
   body { font-family: sans-serif; margin: 0; padding: 4px; display: grid;
@@ -12,10 +26,13 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #error { color: #b00; white-space: pre-wrap; }
   .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; min-height: 0; }
-  textarea { width: 100%; height: 100%; box-sizing: border-box; font-family: monospace; font-size: 13px; margin: 0; }
   .tablewrap { overflow: auto; min-height: 0; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
+  #editor { height: 100%; min-height: 0; border: 1px solid #ccc; overflow: hidden; }
+  .cm-editor { height: 100%; font-size: 13px; }
+  .cm-scroller { font-family: monospace; }
+  .cm-errorLine { background: #ffe0e0; }
 </style>
 </head>
 <body>
@@ -30,7 +47,7 @@
   <span id="error"></span>
 </div>
 <div class="bottom">
-  <textarea id="src" spellcheck="false"></textarea>
+  <div id="editor"></div>
   <div class="tablewrap">
     <table>
       <thead><tr><th>time</th><th>action</th><th>point</th><th>point_attrs</th><th>action_attrs</th></tr></thead>
