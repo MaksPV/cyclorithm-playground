@@ -71,22 +71,22 @@ const cycloLanguage = StreamLanguage.define({
     if (stream.eatSpace()) return null;
     if (stream.match("//")) { stream.skipToEnd(); return "comment"; }
     if (stream.match('"')) { state.inString = true; return "string"; }
-    if (stream.match(/^\d+(?:st|nd|rd|th)\b/)) return "labelName";
+    if (stream.match(/^\d+(?:st|nd|rd|th)\b/)) return "number";
     if (stream.match(/^-?\d+(?:\.\d+)?(?:ms|[smhdw])/)) return "number";
     if (stream.match(/^-?\d+(?:\.\d+)?\b/)) return "number";
-    if (stream.match(/^\.[A-Za-z_][A-Za-z0-9_]*/)) return "variableName";
+    if (stream.match(/^\.[A-Za-z_][A-Za-z0-9_]*/)) return "variable";
     if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
       const cur = stream.current();
       if (DECLARATION.has(cur) || MODIFIER.has(cur)) return "keyword";
-      if (BOOL.has(cur)) return "bool";
+      if (BOOL.has(cur)) return "atom";
       if (/^[A-Z_][A-Z0-9_]*$/.test(cur)) {
         const rest = stream.string.slice(stream.pos);
-        if (/^\s*\(/.test(rest)) return "function";
-        return "typeName";
+        if (/^\s*\(/.test(rest)) return "def";
+        return "type";
       }
       const rest = stream.string.slice(stream.pos);
-      if (/^\s*\(/.test(rest)) return "function";
-      return "variableName";
+      if (/^\s*\(/.test(rest)) return "def";
+      return "variable";
     }
     if (stream.match(/^(==|!=|<=|>=|<<|>>)/)) return "operator";
     if (stream.match(/^[-+*/%<>|&^!=]/)) return "operator";
@@ -98,14 +98,13 @@ const cycloLanguage = StreamLanguage.define({
 });
 
 const cycloHighlight = HighlightStyle.define([
-  { tag: tags.keyword, color: "#0000ff" },
+  { tag: tags.keyword, color: "#0000ff", fontWeight: "bold" },
   { tag: tags.comment, color: "#008000", fontStyle: "italic" },
   { tag: tags.string, color: "#a31515" },
   { tag: tags.number, color: "#098658" },
-  { tag: tags.bool, color: "#0000ff", fontWeight: "bold" },
-  { tag: tags.labelName, color: "#795e26" },
+  { tag: tags.atom, color: "#0000ff", fontWeight: "bold" },
   { tag: tags.typeName, color: "#267f99" },
-  { tag: [tags.function(tags.variableName), tags.function(tags.typeName)], color: "#795e26" },
+  { tag: tags.definition(tags.variableName), color: "#795e26" },
   { tag: tags.variableName, color: "#001080" },
   { tag: tags.operator, color: "#000000" },
   { tag: tags.punctuation, color: "#000000" },
