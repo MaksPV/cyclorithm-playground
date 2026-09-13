@@ -124,6 +124,28 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn fill_gaps_comes_from_current_engine() {
+        // Модификатор fill gaps: без until добивает пустоты до конца цикла.
+        let src = "schedule \"T\" { point A { actions = [x]; } \
+            cycle R duration = 1h { 0m: A.x(); } \
+            root_cycle start_time = \"2026-01-01T00:00:00\", duration = 24h \
+            { 0h: R(); 0h: fill gaps R(); } }";
+        let out = expand_envelope(
+            run_schedule,
+            src,
+            "2026-01-01T00:00:00",
+            "2026-01-02T00:00:00",
+            &[],
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        // 0:00 занято, дальше каждый час: 1:00 … 23:00 — 24 события.
+        let events = v["result"]["events"].as_array().unwrap();
+        assert_eq!(events.len(), 24);
+        assert_eq!(events[23]["time"], "2026-01-01T23:00:00");
+    }
+
+    #[wasm_bindgen_test]
     fn timeline_envelope_carries_spans() {
         let src = "schedule \"T\" { point A { actions = [x]; } \
             cycle HOP duration = 20m { 0m: A.x(); 20m: A.x(); } \
