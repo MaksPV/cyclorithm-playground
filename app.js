@@ -148,8 +148,10 @@ const tbody = document.getElementById('events');
 }
 function tzMin() { return +tzEl.value || 0; }
 function tzSuffix() {
+  // UTC — пусто: ввод остаётся наивным, движок возвращает наивное 1:1
+  // (первый столбец таблицы зон в docs/reference/output.md).
   const m = tzMin();
-  if (m === 0) return 'Z';
+  if (m === 0) return '';
   const p2 = (n) => String(n).padStart(2, '0');
   const sign = m > 0 ? '+' : '-';
   const a = Math.abs(m);
