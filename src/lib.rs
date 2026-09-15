@@ -6,7 +6,7 @@
 //! `expand_timeline` добавляет спаны: у каждого события — `span`,
 //! плюс distinct-список `spans` для прямоугольников таймлайна.
 
-use cyclorithm_core::schedule::{run_schedule, run_timeline, Diag};
+use cyclorithm_core::api::{run_schedule, run_timeline, Diag};
 use wasm_bindgen::prelude::*;
 
 type Run = fn(&str, &str, &str, &[(&str, &str)]) -> Result<String, Diag>;
