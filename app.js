@@ -128,9 +128,43 @@ const errorLineField = StateField.define({
 const NS = 'http://www.w3.org/2000/svg';
 const startEl = document.getElementById('start');
 const endEl = document.getElementById('end');
+const tzEl = document.getElementById('tz');
 const errEl = document.getElementById('error');
 const svg = document.getElementById('timeline');
 const tbody = document.getElementById('events');
+
+// Зона шкалы: ввод понимается как стена в этой зоне, подписи рисуются
+// в ней же. Движок зон не знает про DST — только фикс-офсеты.
+{
+  const p2 = (n) => String(n).padStart(2, '0');
+  const label = (m) => m === 0 ? 'UTC' : `UTC${m > 0 ? '+' : '-'}${p2(Math.floor(Math.abs(m) / 60))}:${p2(Math.abs(m) % 60)}`;
+  for (let m = -12 * 60; m <= 14 * 60; m += 30) {
+    const o = document.createElement('option');
+    o.value = String(m);
+    o.textContent = label(m);
+    if (m === 0) o.selected = true;
+    tzEl.appendChild(o);
+  }
+}
+function tzMin() { return +tzEl.value || 0; }
+function tzSuffix() {
+  const m = tzMin();
+  if (m === 0) return 'Z';
+  const p2 = (n) => String(n).padStart(2, '0');
+  const sign = m > 0 ? '+' : '-';
+  const a = Math.abs(m);
+  return `${sign}${p2(Math.floor(a / 60))}:${p2(a % 60)}`;
+}
+// Стена (мс + сдвиг зоны) как UTC-компоненты — единый показ зоны.
+function wallParts(ms) {
+  const d = new Date(ms + tzMin() * 60e3);
+  const p = (n) => String(n).padStart(2, '0');
+  return {
+    y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(),
+    h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(),
+    p,
+  };
+}
 
 const editor = new EditorView({
   state: EditorState.create({
@@ -168,17 +202,17 @@ function clearErrorLine() {
   editor.dispatch({ effects: errorLineEffect.of(null) });
 }
 
-// Окно по умолчанию — сегодня/завтра (UTC-день: движок наивный, parseTime
-// считает ввод через Date.UTC). Вшитые в HTML январские даты протухают,
-// как только в редактор вставляют неянварское расписание (ноль событий
-// при живом движке) — поэтому дефолт всегда динамический.
+// Окно по умолчанию — сегодня/завтра в зоне шкалы. Вшитые в HTML январские
+// даты протухают, как только в редактор вставляют неянварское расписание
+// (ноль событий при живом движке) — поэтому дефолт всегда динамический.
 {
-  const now = new Date(Date.now());
-  const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const p = (n) => String(n).padStart(2, '0');
+  const shift = tzMin() * 60e3;
+  const nowWall = Date.now() + shift;
+  const now = new Date(nowWall);
+  const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - shift;
   const iso = (ms) => {
-    const d = new Date(ms);
-    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T00:00`;
+    const w = wallParts(ms);
+    return `${w.y}-${w.p(w.mo)}-${w.p(w.d)}T00:00`;
   };
   startEl.value = iso(day);
   endEl.value = iso(day + 86400e3);
@@ -193,17 +227,24 @@ let lastRes = null;
 let fetchTimer = null;
 
 function parseTime(s) {
-  // Наивный ISO8601 без таймзоны — как мс epoch (движок время наивное).
-  // Секунды опциональны: datetime-local отдаёт без них.
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?$/);
+  // ISO8601 движка: наивная стена — как мс epoch 1:1, с суффиксом Z/±HH:MM —
+  // инстант (стена минус офсет). Секунды опциональны: datetime-local без них.
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/);
   if (!m) return NaN;
-  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), m[7] ? +m[7].slice(1).padEnd(3, '0') : 0);
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), m[7] ? +m[7].slice(1).padEnd(3, '0') : 0);
+  const z = m[8];
+  if (!z || z === 'Z') return wall;
+  const sign = z[0] === '+' ? 1 : -1;
+  const off = sign * (+z.slice(1, 3) * 60 + +z.slice(4, 6));
+  return wall - off * 60e3;
 }
 
 function windowInput(elm) {
-  // datetime-local отдаёт без секунд — движок хочет полные.
+  // datetime-local отдаёт стену без секунд и зоны: достраиваем полные
+  // секунды и суффикс зоны шкалы — движок разберёт и вернёт время с зоной.
   const v = elm.value;
-  return v.length === 16 ? v + ':00' : v;
+  const full = v.length === 16 ? v + ':00' : v;
+  return full + tzSuffix();
 }
 
 function el(name, attrs, parent) {
@@ -272,11 +313,10 @@ function scheduleFetch() {
 }
 
 function formatTime(ms) {
-  // Границы докачки — с точностью до секунд.
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` +
-    `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  // Границы докачки — стена в зоне шкалы с суффиксом, с точностью до секунд.
+  const w = wallParts(ms);
+  return `${w.y}-${w.p(w.mo)}-${w.p(w.d)}` +
+    `T${w.p(w.h)}:${w.p(w.mi)}:${w.p(w.s)}${tzSuffix()}`;
 }
 
 // Шаг линейки: первый, при котором подписи не ближе 70px.
@@ -289,10 +329,9 @@ function chooseStep(spanMs, pxPerMs) {
 }
 
 function tickLabel(ms, step) {
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, '0');
-  const hm = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-  return step >= 12 * 3600e3 ? `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)} ${hm}` : hm;
+  const w = wallParts(ms);
+  const hm = `${w.p(w.h)}:${w.p(w.mi)}`;
+  return step >= 12 * 3600e3 ? `${w.p(w.d)}.${w.p(w.mo)} ${hm}` : hm;
 }
 
 function drawRuler(t0, t1, X, W, h) {
@@ -313,15 +352,15 @@ function drawRuler(t0, t1, X, W, h) {
       el('line', { x1: x, x2: x, y1: h - 4, y2: h, stroke: '#bbb' }, svg);
     }
   }
-  // Верхний уровень — даты: подпись на каждой полуночи UTC в виде.
+  // Верхний уровень — даты: подпись на каждой полуночи зоны шкалы в виде.
   const day = 86400e3;
-  for (let t = Math.ceil(t0 / day) * day; t <= t1; t += day) {
+  const shift = tzMin() * 60e3;
+  for (let t = Math.ceil((t0 + shift) / day) * day - shift; t <= t1; t += day) {
     const x = X(t);
     el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#999' }, svg);
-    const d = new Date(t);
-    const p = (n) => String(n).padStart(2, '0');
+    const w = wallParts(t);
     const label = el('text', { x: x + 3, y: 10, 'font-size': 10, fill: '#333' }, svg);
-    label.textContent = `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)}`;
+    label.textContent = `${w.p(w.d)}.${w.p(w.mo)}`;
   }
 }
 
@@ -521,6 +560,8 @@ function initNav() {
 document.getElementById('run').addEventListener('click', run);
 startEl.addEventListener('change', run);
 endEl.addEventListener('change', run);
+// Смена зоны перетолковывает ввод как стену в новой зоне — пересчитать.
+tzEl.addEventListener('change', run);
 initNav();
 
 await init();
