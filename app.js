@@ -128,30 +128,46 @@ const errorLineField = StateField.define({
 const NS = 'http://www.w3.org/2000/svg';
 const startEl = document.getElementById('start');
 const endEl = document.getElementById('end');
+const qzEl = document.getElementById('qz');
 const tzEl = document.getElementById('tz');
+const zoneEl = document.getElementById('zone');
 const errEl = document.getElementById('error');
 const svg = document.getElementById('timeline');
 const tbody = document.getElementById('events');
 
-// Зона шкалы: ввод понимается как стена в этой зоне, подписи рисуются
-// в ней же. Движок зон не знает про DST — только фикс-офсеты.
+// Две зоны: запрос — кадр окна движка (Наивно — стены из файла,
+// UTC/±HH:MM — явный пояс окна), шкала — только подписи и ось.
+// Движок зон с DST не знает — только фикс-офсеты.
 {
   const p2 = (n) => String(n).padStart(2, '0');
   const label = (m) => m === 0 ? 'UTC' : `UTC${m > 0 ? '+' : '-'}${p2(Math.floor(Math.abs(m) / 60))}:${p2(Math.abs(m) % 60)}`;
-  for (let m = -12 * 60; m <= 14 * 60; m += 30) {
-    const o = document.createElement('option');
-    o.value = String(m);
-    o.textContent = label(m);
-    if (m === 0) o.selected = true;
-    tzEl.appendChild(o);
-  }
+  const fill = (select) => {
+    for (let m = -12 * 60; m <= 14 * 60; m += 30) {
+      const o = document.createElement('option');
+      o.value = String(m);
+      o.textContent = label(m);
+      select.appendChild(o);
+    }
+  };
+  const naive = document.createElement('option');
+  naive.value = 'naive';
+  naive.textContent = 'Наивно';
+  naive.selected = true;
+  qzEl.appendChild(naive);
+  fill(qzEl);
+  fill(tzEl);
+  // Шкала по умолчанию — системная зона браузера (к ближайшим 30 мин),
+  // иначе UTC. Запрос по умолчанию — Наивно.
+  const sys = Math.min(840, Math.max(-720, Math.round(-new Date().getTimezoneOffset() / 30) * 30));
+  tzEl.value = String(sys);
 }
-function tzMin() { return +tzEl.value || 0; }
-function tzSuffix() {
-  // UTC — пусто: ввод остаётся наивным, движок возвращает наивное 1:1
-  // (первый столбец таблицы зон в docs/reference/output.md).
-  const m = tzMin();
-  if (m === 0) return '';
+function scaleMin() { return +tzEl.value || 0; }
+function querySuffix() {
+  // Наивно — без суффикса: движок читает окно в кадре файла.
+  // UTC — явный Z, остальное — ±HH:MM.
+  if (qzEl.value === 'naive') return '';
+  const m = +qzEl.value || 0;
+  if (m === 0) return 'Z';
   const p2 = (n) => String(n).padStart(2, '0');
   const sign = m > 0 ? '+' : '-';
   const a = Math.abs(m);
@@ -159,7 +175,7 @@ function tzSuffix() {
 }
 // Стена (мс + сдвиг зоны) как UTC-компоненты — единый показ зоны.
 function wallParts(ms) {
-  const d = new Date(ms + tzMin() * 60e3);
+  const d = new Date(ms + scaleMin() * 60e3);
   const p = (n) => String(n).padStart(2, '0');
   return {
     y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(),
@@ -208,7 +224,7 @@ function clearErrorLine() {
 // даты протухают, как только в редактор вставляют неянварское расписание
 // (ноль событий при живом движке) — поэтому дефолт всегда динамический.
 {
-  const shift = tzMin() * 60e3;
+  const shift = scaleMin() * 60e3;
   const nowWall = Date.now() + shift;
   const now = new Date(nowWall);
   const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - shift;
@@ -229,24 +245,36 @@ let lastRes = null;
 let fetchTimer = null;
 
 function parseTime(s) {
-  // ISO8601 движка: наивная стена — как мс epoch 1:1, с суффиксом Z/±HH:MM —
-  // инстант (стена минус офсет). Секунды опциональны: datetime-local без них.
+  // Позиция строки движка на шкале — буквально, как есть:
+  // наивная стена — стеной в зоне шкалы, с суффиксом Z/±HH:MM — инстант
+  // (стена минус офсет). Секунды опциональны: datetime-local без них.
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/);
   if (!m) return NaN;
   const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), m[7] ? +m[7].slice(1).padEnd(3, '0') : 0);
   const z = m[8];
-  if (!z || z === 'Z') return wall;
+  if (!z) return wall - scaleMin() * 60e3;
+  if (z === 'Z') return wall;
   const sign = z[0] === '+' ? 1 : -1;
   const off = sign * (+z.slice(1, 3) * 60 + +z.slice(4, 6));
   return wall - off * 60e3;
 }
 
+// Зона ответа движка для бейджа: суффикс первой строки времени
+// (события, иначе спаны) — иначе «наивно».
+function answerZone(res) {
+  const first = res.events[0]?.time ?? res.spans[0]?.start;
+  if (!first) return null;
+  const m = first.match(/(Z|[+-]\d{2}:\d{2})$/);
+  return m ? m[1] : 'наивно';
+}
+
 function windowInput(elm) {
   // datetime-local отдаёт стену без секунд и зоны: достраиваем полные
-  // секунды и суффикс зоны шкалы — движок разберёт и вернёт время с зоной.
+  // секунды и суффикс зоны запроса (или ничего для Наивно) — движок
+  // разберёт окно в своём кадре и вернёт время как есть.
   const v = elm.value;
   const full = v.length === 16 ? v + ':00' : v;
-  return full + tzSuffix();
+  return full + querySuffix();
 }
 
 function el(name, attrs, parent) {
@@ -258,6 +286,7 @@ function el(name, attrs, parent) {
 
 function run() {
   errEl.textContent = '';
+  zoneEl.textContent = '';
   clearErrorLine();
   tbody.innerHTML = '';
   svg.innerHTML = '';
@@ -287,6 +316,8 @@ function run() {
   dataWin = { t0: w0, t1: w1 };
   fetched = { t0: w0, t1: w1 };
   tView = { t0: w0, t1: w1 };
+  const az = answerZone(env.result);
+  zoneEl.textContent = az === null ? 'нет событий' : `ответ движка: ${az}`;
   draw(env.result);
 }
 
@@ -315,10 +346,11 @@ function scheduleFetch() {
 }
 
 function formatTime(ms) {
-  // Границы докачки — стена в зоне шкалы с суффиксом, с точностью до секунд.
+  // Границы докачки — стена в зоне шкалы с суффиксом зоны запроса,
+  // с точностью до секунд.
   const w = wallParts(ms);
   return `${w.y}-${w.p(w.mo)}-${w.p(w.d)}` +
-    `T${w.p(w.h)}:${w.p(w.mi)}:${w.p(w.s)}${tzSuffix()}`;
+    `T${w.p(w.h)}:${w.p(w.mi)}:${w.p(w.s)}${querySuffix()}`;
 }
 
 // Шаг линейки: первый, при котором подписи не ближе 70px.
@@ -356,7 +388,7 @@ function drawRuler(t0, t1, X, W, h) {
   }
   // Верхний уровень — даты: подпись на каждой полуночи зоны шкалы в виде.
   const day = 86400e3;
-  const shift = tzMin() * 60e3;
+  const shift = scaleMin() * 60e3;
   for (let t = Math.ceil((t0 + shift) / day) * day - shift; t <= t1; t += day) {
     const x = X(t);
     el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#999' }, svg);
@@ -562,7 +594,9 @@ function initNav() {
 document.getElementById('run').addEventListener('click', run);
 startEl.addEventListener('change', run);
 endEl.addEventListener('change', run);
-// Смена зоны перетолковывает ввод как стену в новой зоне — пересчитать.
+// Смена зоны запроса меняет кадр окна движка, смена шкалы — только
+// показ: в обоих случаях пересчитать.
+qzEl.addEventListener('change', run);
 tzEl.addEventListener('change', run);
 initNav();
 
