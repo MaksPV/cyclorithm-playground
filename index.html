@@ -25,7 +25,15 @@
   #timeline { width: 100%; height: 100%; border: 1px solid #ccc; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #error { color: #b00; white-space: pre-wrap; }
-  .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; min-height: 0; }
+  .bottom { display: grid; grid-template-columns: 220px 1fr 1fr; gap: 4px; min-height: 0; }
+  #filepanel { border: 1px solid #ccc; overflow: auto; min-height: 0; padding: 4px; font-size: 13px; }
+  #filepanel h3 { margin: 2px 0 6px; font-size: 13px; }
+  #files { list-style: none; margin: 0 0 6px; padding: 0; }
+  #files li { padding: 3px 6px; cursor: pointer; border-radius: 3px; font-family: monospace; word-break: break-all; }
+  #files li:hover { background: #eee; }
+  #files li.active { background: #cde6ff; font-weight: bold; }
+  #filepanel .hint { color: #555; font-size: 11px; margin-top: 6px; }
+  #filepanel .row { margin-bottom: 4px; }
   .tablewrap { overflow: auto; min-height: 0; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
@@ -50,6 +58,17 @@
   <span id="error"></span>
 </div>
 <div class="bottom">
+  <div id="filepanel">
+    <h3>Файлы</h3>
+    <ul id="files"></ul>
+    <div class="row">
+      <button id="file-new" title="Новый файл">+ Новый</button>
+      <button id="file-add" title="Загрузить .cyclo с диска">Загрузить</button>
+      <input id="file-input" type="file" accept=".cyclo" multiple hidden>
+      <button id="file-del" title="Удалить активный файл">Удалить</button>
+    </div>
+    <div class="hint">Активный файл — в редакторе, остальные уходят в <code>use</code>. Пути — как в исходнике; переименование — даблкликом. Хранится локально (localStorage).</div>
+  </div>
   <div id="editor"></div>
   <div class="tablewrap">
     <table>
