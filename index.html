@@ -21,15 +21,29 @@
 <style>
   html, body { height: 100%; }
   body { font-family: sans-serif; margin: 0; padding: 4px; display: grid;
-         grid-template-rows: minmax(0, 5fr) auto minmax(0, 6fr); gap: 4px; box-sizing: border-box; }
+         grid-template-rows: minmax(0, 5fr) 8px auto minmax(0, 6fr); gap: 4px; box-sizing: border-box; }
   #timeline { width: 100%; height: 100%; border: 1px solid #ccc; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #error { color: #b00; white-space: pre-wrap; }
-  .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; min-height: 0; }
+  .bottom { display: grid; grid-template-columns: 220px 1fr 1fr; gap: 4px; min-height: 0; }
+  #filepanel { border: 1px solid #ccc; overflow: auto; min-height: 0; padding: 4px; font-size: 13px; }
+  #filepanel h3 { margin: 2px 0 6px; font-size: 13px; }
+  #files { list-style: none; margin: 0 0 6px; padding: 0; }
+  #files li { padding: 3px 6px; cursor: pointer; border-radius: 3px; font-family: monospace; word-break: break-all; }
+  #files li:hover { background: #eee; }
+  #files li.active { background: #cde6ff; font-weight: bold; }
+  #filepanel .hint { color: #555; font-size: 11px; margin-top: 6px; }
+  #filepanel .links { margin-top: 8px; padding-top: 6px; border-top: 1px solid #ddd; font-size: 12px; display: flex; gap: 10px; }
+  #filepanel .row { margin-bottom: 4px; }
   .tablewrap { overflow: auto; min-height: 0; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
   #editor { height: 100%; min-height: 0; border: 1px solid #ccc; overflow: hidden; display: flex; flex-direction: column; }
+  .split-h { height: 8px; cursor: row-resize; touch-action: none; }
+  .split-h:hover { background: #cde6ff; }
+  .split-v { width: 8px; cursor: col-resize; min-height: 0; touch-action: none; }
+  .split-v:hover { background: #cde6ff; }
+  .tgl.on { font-weight: bold; }
   .cm-editor { flex: 1; min-height: 0; font-size: 13px; }
   .cm-scroller { font-family: monospace; overflow: auto; }
   .cm-gutters { background: #f7f7f7; border-right: 1px solid #ddd; color: #999; }
@@ -38,18 +52,44 @@
 </head>
 <body>
 <svg id="timeline" role="img" aria-label="таймлайн событий"></svg>
+<div class="split-h" id="split-tl" title="Высота таймлайна"></div>
 <div class="row">
   <label>start <input id="start" type="datetime-local" value="2026-01-09T00:00"></label>
   <label>end <input id="end" type="datetime-local" value="2026-01-10T00:00"></label>
+  <label>запрос <select id="qz" title="Зона окна запроса: Наивно — стены из файла, UTC/±HH:MM — явный пояс"></select></label>
+  <label>шкала <select id="tz" title="Зона шкалы: только подписи и ось"></select></label>
   <button id="run">Развернуть</button>
   <button id="zoom-in" title="Приблизить">+</button>
   <button id="zoom-out" title="Отдалить">−</button>
   <button id="zoom-reset" title="Всё окно">⤾</button>
+  <button class="tgl on" id="tgl-tl" title="Показать/скрыть таймлайн">Таймлайн</button>
+  <button class="tgl on" id="tgl-files" title="Показать/скрыть файлы">Файлы</button>
+  <button class="tgl on" id="tgl-editor" title="Показать/скрыть редактор">Редактор</button>
+  <button class="tgl on" id="tgl-table" title="Показать/скрыть таблицу">Таблица</button>
+  <button id="layout-reset" title="Вернуть пропорции и видимость по умолчанию">Сброс раскладки</button>
   <span id="error"></span>
 </div>
-<div class="bottom">
+<div class="bottom" id="bottom">
+  <div id="filepanel">
+    <h3>Файлы</h3>
+    <ul id="files"></ul>
+    <div class="row">
+      <button id="file-new" title="Новый файл">+ Новый</button>
+      <button id="file-add" title="Загрузить .cyclo с диска">Загрузить</button>
+      <input id="file-input" type="file" accept=".cyclo" multiple hidden>
+      <button id="file-del" title="Удалить активный файл">Удалить</button>
+    </div>
+    <div class="hint">Активный файл — в редакторе, остальные уходят в <code>use</code>. Пути — как в исходнике; переименование — даблкликом. Хранится локально (localStorage).</div>
+    <div class="links">
+      <a href="https://MaksPV.github.io/cyclorithm/" target="_blank" rel="noopener">Вики</a>
+      <a href="https://github.com/MaksPV/cyclorithm" target="_blank" rel="noopener">Движок</a>
+      <a href="https://github.com/MaksPV/cyclorithm-playground" target="_blank" rel="noopener">Плейграунд</a>
+    </div>
+  </div>
+  <div class="split-v" id="split-fe" title="Ширина панели файлов"></div>
   <div id="editor"></div>
-  <div class="tablewrap">
+  <div class="split-v" id="split-et" title="Ширина таблицы"></div>
+  <div class="tablewrap" id="tablewrap">
     <table>
       <thead><tr><th>time</th><th>action</th><th>point</th><th>point_attrs</th><th>action_attrs</th></tr></thead>
       <tbody id="events"></tbody>

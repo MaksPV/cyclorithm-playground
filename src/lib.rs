@@ -6,7 +6,7 @@
 //! `expand_timeline` добавляет спаны: у каждого события — `span`,
 //! плюс distinct-список `spans` для прямоугольников таймлайна.
 
-use cyclorithm_core::schedule::{run_schedule, run_timeline, Diag};
+use cyclorithm_core::api::{Diag, run_schedule, run_timeline};
 use wasm_bindgen::prelude::*;
 
 type Run = fn(&str, &str, &str, &[(&str, &str)]) -> Result<String, Diag>;
@@ -143,6 +143,51 @@ mod tests {
         let events = v["result"]["events"].as_array().unwrap();
         assert_eq!(events.len(), 24);
         assert_eq!(events[23]["time"], "2026-01-01T23:00:00");
+    }
+
+    #[wasm_bindgen_test]
+    fn naive_window_inherits_file_zone_walls_stand() {
+        // Файл с городом + наивное окно: движок читает наивное как стены
+        // в зоне файла (кадр, PR #39), а отвечает в зоне файла с суффиксом.
+        let src = "schedule \"T\" { timezone = \"+03:00\" \
+            point A { actions = [x]; } \
+            cycle R duration = 1h { 0m: A.x(); } \
+            root_cycle start_time = \"2026-01-01T06:00:00\", duration = 24h \
+            { 0h: R(); } }";
+        let out = expand_envelope(
+            run_schedule,
+            src,
+            "2026-01-01T00:00:00",
+            "2026-01-02T00:00:00",
+            &[],
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        let events = v["result"]["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["time"], "2026-01-01T06:00:00+03:00");
+    }
+
+    #[wasm_bindgen_test]
+    fn aware_window_answers_with_suffix() {
+        // Тот же файл, окно с явным поясом: ответ с суффиксом зоны окна.
+        let src = "schedule \"T\" { timezone = \"+03:00\" \
+            point A { actions = [x]; } \
+            cycle R duration = 1h { 0m: A.x(); } \
+            root_cycle start_time = \"2026-01-01T06:00:00\", duration = 24h \
+            { 0h: R(); } }";
+        let out = expand_envelope(
+            run_schedule,
+            src,
+            "2026-01-01T00:00:00+03:00",
+            "2026-01-02T00:00:00+03:00",
+            &[],
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        let events = v["result"]["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["time"], "2026-01-01T06:00:00+03:00");
     }
 
     #[wasm_bindgen_test]
