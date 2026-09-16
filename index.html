@@ -38,9 +38,9 @@
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
   #editor { height: 100%; min-height: 0; border: 1px solid #ccc; overflow: hidden; display: flex; flex-direction: column; }
-  .split-h { height: 8px; cursor: row-resize; }
+  .split-h { height: 8px; cursor: row-resize; touch-action: none; }
   .split-h:hover { background: #cde6ff; }
-  .split-v { width: 8px; cursor: col-resize; min-height: 0; }
+  .split-v { width: 8px; cursor: col-resize; min-height: 0; touch-action: none; }
   .split-v:hover { background: #cde6ff; }
   .tgl.on { font-weight: bold; }
   .cm-editor { flex: 1; min-height: 0; font-size: 13px; }

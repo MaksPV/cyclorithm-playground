@@ -834,13 +834,16 @@ function applyLayout() {
   }
 }
 
-// Драг сплиттера: стартовые позиции на pointerdown, живьём — в layout + apply.
+// Драг сплиттера: дельта — от старта драга, база — снапшот на pointerdown.
+// (Прибавлять полную дельту к уже изменённому значению нельзя —
+// размер убегал бы от мыши с ускорением.)
 function makeDraggable(gutter, onDrag) {
   gutter.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
     gutter.setPointerCapture(ev.pointerId);
     const x0 = ev.clientX, y0 = ev.clientY;
-    const move = (e) => onDrag(e.clientX - x0, e.clientY - y0);
+    const snap = { ...layout };
+    const move = (e) => onDrag(e.clientX - x0, e.clientY - y0, snap);
     const up = () => {
       gutter.removeEventListener('pointermove', move);
       gutter.removeEventListener('pointerup', up);
@@ -853,19 +856,17 @@ function makeDraggable(gutter, onDrag) {
   });
 }
 
-makeDraggable(splitTl, (dx, dy) => {
-  layout.tlH = Math.min(Math.max(layout.tlH + dy, 120), window.innerHeight - 200);
+makeDraggable(splitTl, (dx, dy, snap) => {
+  layout.tlH = Math.min(Math.max(snap.tlH + dy, 120), window.innerHeight - 200);
   applyLayout();
 });
-makeDraggable(splitFe, (dx) => {
-  layout.filesW = Math.min(Math.max(layout.filesW + dx, 140), window.innerWidth - 400);
+makeDraggable(splitFe, (dx, dy, snap) => {
+  layout.filesW = Math.min(Math.max(snap.filesW + dx, 140), window.innerWidth - 400);
   applyLayout();
 });
-makeDraggable(splitEt, (dx) => {
-  if (layout.tableW === null) {
-    layout.tableW = tablewrapEl.getBoundingClientRect().width || 400;
-  }
-  layout.tableW = Math.min(Math.max(layout.tableW - dx, 200), window.innerWidth - 400);
+makeDraggable(splitEt, (dx, dy, snap) => {
+  const base = (snap.tableW ?? tablewrapEl.getBoundingClientRect().width) || 400;
+  layout.tableW = Math.min(Math.max(base - dx, 200), window.innerWidth - 400);
   applyLayout();
 });
 
