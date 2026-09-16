@@ -130,7 +130,6 @@ const startEl = document.getElementById('start');
 const endEl = document.getElementById('end');
 const qzEl = document.getElementById('qz');
 const tzEl = document.getElementById('tz');
-const zoneEl = document.getElementById('zone');
 const errEl = document.getElementById('error');
 const svg = document.getElementById('timeline');
 const tbody = document.getElementById('events');
@@ -259,15 +258,6 @@ function parseTime(s) {
   return wall - off * 60e3;
 }
 
-// Зона ответа движка для бейджа: суффикс первой строки времени
-// (события, иначе спаны) — иначе «наивно».
-function answerZone(res) {
-  const first = res.events[0]?.time ?? res.spans[0]?.start;
-  if (!first) return null;
-  const m = first.match(/(Z|[+-]\d{2}:\d{2})$/);
-  return m ? m[1] : 'наивно';
-}
-
 function windowInput(elm) {
   // datetime-local отдаёт стену без секунд и зоны: достраиваем полные
   // секунды и суффикс зоны запроса (или ничего для Наивно) — движок
@@ -286,7 +276,6 @@ function el(name, attrs, parent) {
 
 function run() {
   errEl.textContent = '';
-  zoneEl.textContent = '';
   clearErrorLine();
   tbody.innerHTML = '';
   svg.innerHTML = '';
@@ -316,8 +305,6 @@ function run() {
   dataWin = { t0: w0, t1: w1 };
   fetched = { t0: w0, t1: w1 };
   tView = { t0: w0, t1: w1 };
-  const az = answerZone(env.result);
-  zoneEl.textContent = az === null ? 'нет событий' : `ответ движка: ${az}`;
   draw(env.result);
 }
 
