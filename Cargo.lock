@@ -27,7 +27,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "cyclorithm-core"
 version = "0.3.2"
-source = "git+https://github.com/MaksPV/cyclorithm?branch=dev#8ce2f2bdbcaf0079349c54c391e0078d40b5ea49"
+source = "git+https://github.com/MaksPV/cyclorithm?branch=dev#bbc5dc1612211ebd7a612f41382f9d6bd30c95c3"
 dependencies = [
  "pest",
  "pest_derive",

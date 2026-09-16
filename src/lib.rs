@@ -149,7 +149,7 @@ mod tests {
     fn naive_window_inherits_file_zone_walls_stand() {
         // Файл с городом + наивное окно: движок читает наивное как стены
         // в зоне файла (кадр, PR #39), а отвечает в зоне файла с суффиксом.
-        let src = "schedule \"T\" { timezone = \"+03:00\", \
+        let src = "schedule \"T\" { timezone = \"+03:00\" \
             point A { actions = [x]; } \
             cycle R duration = 1h { 0m: A.x(); } \
             root_cycle start_time = \"2026-01-01T06:00:00\", duration = 24h \
@@ -171,7 +171,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn aware_window_answers_with_suffix() {
         // Тот же файл, окно с явным поясом: ответ с суффиксом зоны окна.
-        let src = "schedule \"T\" { timezone = \"+03:00\", \
+        let src = "schedule \"T\" { timezone = \"+03:00\" \
             point A { actions = [x]; } \
             cycle R duration = 1h { 0m: A.x(); } \
             root_cycle start_time = \"2026-01-01T06:00:00\", duration = 24h \
