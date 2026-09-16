@@ -47,10 +47,61 @@ schedule "Автобусный парк" {
 }
 `;
 
-// Библиотеки для `use` (путь — как в исходнике). v1: вшиты, позже — выбор файлов.
-const LIBS = JSON.stringify([
-  ["libs/route_lib.cyclo", "const MORNING = 6;\n\npred commute(at) = morning(at) or evening(at);\n"],
-]);
+// Виртуальная ФС: активный файл — в редакторе, остальные уходят в `use`
+// (путь — как в исходнике). Между перезагрузками — localStorage.
+const FS_KEY = 'cyclo.playground.fs.v1';
+const MAIN = 'main.cyclo';
+const ROUTE_LIB = 'libs/route_lib.cyclo';
+const ROUTE_LIB_SRC = 'const MORNING = 6;\n\npred commute(at) = morning(at) or evening(at);\n';
+
+let files = new Map();
+let activePath = MAIN;
+
+function seedFs() {
+  files = new Map([[MAIN, DEFAULT_SRC], [ROUTE_LIB, ROUTE_LIB_SRC]]);
+  activePath = MAIN;
+}
+
+function saveFs() {
+  try {
+    localStorage.setItem(FS_KEY, JSON.stringify({ active: activePath, files: [...files] }));
+  } catch {
+    // Квота/приватный режим — сессия живёт в памяти.
+  }
+}
+
+function loadFs() {
+  seedFs();
+  let raw = null;
+  try {
+    raw = localStorage.getItem(FS_KEY);
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  try {
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.files) || data.files.length === 0) return;
+    const next = new Map();
+    for (const [p, t] of data.files) {
+      if (typeof p === 'string' && p && typeof t === 'string') next.set(p, t);
+    }
+    if (next.size === 0) return;
+    files = next;
+    if (typeof data.active === 'string' && files.has(data.active)) activePath = data.active;
+    else activePath = [...files.keys()][0];
+  } catch {
+    // Битый JSON — остаёмся на сиде.
+  }
+}
+
+function libsJson() {
+  return JSON.stringify([...files].filter(([p]) => p !== activePath));
+}
+
+function syncActiveToFs() {
+  files.set(activePath, editor.state.doc.toString());
+}
 
 // --- подсветка cyclo (зеркало cyclo_lexer.py / grammar.pest) ---
 const DECLARATION = new Set(["schedule","use","const","fun","pred","time_const","point","actions","attrs","cycle","routine","root_cycle","start_time","duration","reverse","timezone"]);
@@ -183,9 +234,11 @@ function wallParts(ms) {
   };
 }
 
+loadFs();
+
 const editor = new EditorView({
   state: EditorState.create({
-    doc: DEFAULT_SRC,
+    doc: files.get(activePath) ?? '',
     extensions: [
       lineNumbers(),
       highlightActiveLineGutter(),
@@ -203,6 +256,124 @@ const editor = new EditorView({
 });
 
 function getSrc() { return editor.state.doc.toString(); }
+
+// --- файловый сайдбар ---
+const filesEl = document.getElementById('files');
+
+function renderFiles() {
+  filesEl.innerHTML = '';
+  for (const p of files.keys()) {
+    const li = document.createElement('li');
+    li.textContent = p;
+    if (p === activePath) li.classList.add('active');
+    li.title = p === activePath ? 'активный файл (в редакторе)' : 'открыть в редакторе';
+    li.addEventListener('click', () => switchFile(p));
+    li.addEventListener('dblclick', () => renameFile(p));
+    filesEl.appendChild(li);
+  }
+}
+
+function switchFile(p) {
+  if (p === activePath || !files.has(p)) return;
+  syncActiveToFs();
+  activePath = p;
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: files.get(p) },
+  });
+  saveFs();
+  renderFiles();
+  clearErrorLine();
+}
+
+function normPath(p) {
+  return p.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function renameFile(p) {
+  const next = prompt('Новый путь файла', p);
+  if (next === null) return;
+  const q = normPath(next);
+  if (!q || q === p) return;
+  if (files.has(q) && !confirm(`Файл ${q} уже есть. Перезаписать?`)) return;
+  syncActiveToFs();
+  const entries = [...files].map(([k, v]) => [k === p ? q : k, k === p ? files.get(p) : v]);
+  files = new Map(entries);
+  if (activePath === p) activePath = q;
+  saveFs();
+  renderFiles();
+}
+
+function addFiles(list) {
+  let changed = false;
+  const reads = [...list].map((f) => new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve([f.name, String(r.result ?? '')]);
+    r.onerror = () => resolve(null);
+    r.readAsText(f);
+  }));
+  Promise.all(reads).then((items) => {
+    for (const it of items) {
+      if (!it) continue;
+      const q = normPath(it[0]);
+      if (!q) continue;
+      if (files.has(q) && !confirm(`Файл ${q} уже есть. Перезаписать?`)) continue;
+      files.set(q, it[1]);
+      changed = true;
+    }
+    if (changed) {
+      saveFs();
+      renderFiles();
+    }
+  });
+}
+
+document.getElementById('file-new').addEventListener('click', () => {
+  const name = prompt('Путь нового файла', 'libs/new_lib.cyclo');
+  if (name === null) return;
+  const q = normPath(name);
+  if (!q) return;
+  if (files.has(q)) {
+    switchFile(q);
+    return;
+  }
+  syncActiveToFs();
+  files.set(q, '');
+  saveFs();
+  renderFiles();
+  switchFile(q);
+});
+document.getElementById('file-add').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', (ev) => {
+  addFiles(ev.target.files);
+  ev.target.value = '';
+});
+document.getElementById('file-del').addEventListener('click', () => {
+  if (files.size <= 1) {
+    alert('Последний файл удалить нельзя.');
+    return;
+  }
+  if (!confirm(`Удалить ${activePath}?`)) return;
+  files.delete(activePath);
+  activePath = [...files.keys()][0];
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: files.get(activePath) },
+  });
+  saveFs();
+  renderFiles();
+  clearErrorLine();
+});
+filesEl.parentElement.addEventListener('dragover', (ev) => ev.preventDefault());
+filesEl.parentElement.addEventListener('drop', (ev) => {
+  ev.preventDefault();
+  if (ev.dataTransfer?.files?.length) addFiles(ev.dataTransfer.files);
+});
+window.addEventListener('beforeunload', () => {
+  syncActiveToFs();
+  saveFs();
+});
+renderFiles();
 
 function selectLine(n) {
   if (n < 1 || n > editor.state.doc.lines) return;
@@ -279,9 +450,11 @@ function run() {
   clearErrorLine();
   tbody.innerHTML = '';
   svg.innerHTML = '';
+  syncActiveToFs();
+  saveFs();
   let env;
   try {
-    env = JSON.parse(expand_timeline(getSrc(), windowInput(startEl), windowInput(endEl), LIBS));
+    env = JSON.parse(expand_timeline(getSrc(), windowInput(startEl), windowInput(endEl), libsJson()));
   } catch (e) {
     errEl.textContent = 'клей WASM: ' + e;
     return;
@@ -316,9 +489,10 @@ function ensureData() {
   const span = tView.t1 - tView.t0;
   const s = Math.floor((tView.t0 - span) / 1000) * 1000;
   const e = Math.ceil((tView.t1 + span) / 1000) * 1000;
+  syncActiveToFs();
   let env;
   try {
-    env = JSON.parse(expand_timeline(getSrc(), formatTime(s), formatTime(e), LIBS));
+    env = JSON.parse(expand_timeline(getSrc(), formatTime(s), formatTime(e), libsJson()));
   } catch {
     return;
   }
