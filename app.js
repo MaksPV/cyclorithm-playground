@@ -515,7 +515,10 @@ function formatTime(ms) {
 }
 
 // Шаг линейки: первый, при котором подписи не ближе 70px.
-const STEPS = [60e3, 300e3, 900e3, 3600e3, 3 * 3600e3, 6 * 3600e3, 12 * 3600e3, 86400e3];
+// Дальше суток — календарные уровни (фикс. шаг в мс невозможен):
+// месяцы (09.26), годы (2026), века (2000).
+const DAY = 86400e3;
+const STEPS = [60e3, 300e3, 900e3, 3600e3, 3 * 3600e3, 6 * 3600e3, 12 * 3600e3, DAY];
 function chooseStep(spanMs, pxPerMs) {
   for (const s of STEPS) {
     if (s * pxPerMs >= 70) return s;
@@ -529,33 +532,114 @@ function tickLabel(ms, step) {
   return step >= 12 * 3600e3 ? `${w.p(w.d)}.${w.p(w.mo)} ${hm}` : hm;
 }
 
+// Календарные старты в зоне шкалы (shift мс): месяцы — 1-е числа,
+// годы — 1 января с шагом step лет. Кап итераций — защита от сверхотдаления.
+function calStarts(t0, t1, shift, unit, step) {
+  const out = [];
+  const d = new Date(t0 + shift);
+  d.setUTCHours(0, 0, 0, 0);
+  if (unit === 'month') {
+    d.setUTCDate(1);
+  } else {
+    const y = d.getUTCFullYear();
+    d.setUTCFullYear(y - (((y % step) + step) % step), 0, 1);
+  }
+  let guard = 0;
+  while (guard++ < 1200) {
+    const t = d.getTime() - shift;
+    if (t > t1) break;
+    if (t >= t0) out.push(t);
+    if (unit === 'month') d.setUTCMonth(d.getUTCMonth() + 1);
+    else d.setUTCFullYear(d.getUTCFullYear() + step);
+  }
+  return out;
+}
+
+function rulerTick(x, h, label) {
+  el('line', { x1: x, x2: x, y1: h - 8, y2: h, stroke: '#999' }, svg);
+  const lab = el('text', { x: x + 3, y: h - 10, 'font-size': 10, fill: '#555' }, svg);
+  lab.textContent = label;
+}
+
+function rulerVertical(x, h, text, strong) {
+  el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: strong ? '#999' : '#bbb' }, svg);
+  const lab = el('text', { x: x + 3, y: 10, 'font-size': 10, fill: '#333' }, svg);
+  lab.textContent = text;
+}
+
 function drawRuler(t0, t1, X, W, h) {
   const pxPerMs = (W - 44 - 10) / (t1 - t0);
-  const step = chooseStep(t1 - t0, pxPerMs);
+  const span = t1 - t0;
+  const shift = scaleMin() * 60e3;
   el('line', { x1: 44, x2: W - 10, y1: h, y2: h, stroke: '#999' }, svg);
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+  // Дневной уровень и мельче: сутки ещё читаются — как раньше.
+  if (DAY * pxPerMs >= 70) {
+    const step = chooseStep(span, pxPerMs);
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      rulerTick(X(t), h, tickLabel(t, step));
+    }
+    const minor = step / 5;
+    if (minor * pxPerMs >= 4) {
+      for (let t = Math.ceil(t0 / minor) * minor; t <= t1; t += minor) {
+        if (t % step === 0) continue;
+        const x = X(t);
+        el('line', { x1: x, x2: x, y1: h - 4, y2: h, stroke: '#bbb' }, svg);
+      }
+    }
+    // Верхний уровень — даты: подпись на каждой полуночи зоны шкалы в виде.
+    for (let t = Math.ceil((t0 + shift) / DAY) * DAY - shift; t <= t1; t += DAY) {
+      const w = wallParts(t);
+      rulerVertical(X(t), h, `${w.p(w.d)}.${w.p(w.mo)}`, true);
+    }
+    return;
+  }
+  // Подписи не ближе 70px — общий страж уровней ниже.
+  let lastX = -Infinity;
+  const labelIfFit = (x, text) => {
+    if (x - lastX < 70) return;
+    lastX = x;
+    const lab = el('text', { x: x + 3, y: h - 10, 'font-size': 10, fill: '#555' }, svg);
+    lab.textContent = text;
+  };
+  // Месяцы: тики 1-х чисел (09.26), дальше — годы и века.
+  if (span <= 400 * DAY) {
+    for (const t of calStarts(t0, t1, shift, 'month')) {
+      const x = X(t);
+      el('line', { x1: x, x2: x, y1: h - 8, y2: h, stroke: '#999' }, svg);
+      const w = wallParts(t);
+      labelIfFit(x, `${w.p(w.mo)}.${String(w.y % 100).padStart(2, '0')}`);
+      el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#ddd' }, svg);
+    }
+    return;
+  }
+  if (span <= 150 * 365 * DAY) {
+    for (const t of calStarts(t0, t1, shift, 'year', 1)) {
+      const x = X(t);
+      el('line', { x1: x, x2: x, y1: h - 8, y2: h, stroke: '#999' }, svg);
+      labelIfFit(x, String(wallParts(t).y));
+      el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#999' }, svg);
+    }
+    // Тонкие линии месяцев — если различимы.
+    if (30 * DAY * pxPerMs >= 4) {
+      for (const t of calStarts(t0, t1, shift, 'month')) {
+        const x = X(t);
+        el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#ddd' }, svg);
+      }
+    }
+    return;
+  }
+  // Века: тики 2000/2100, тонкие — десятилетия.
+  for (const t of calStarts(t0, t1, shift, 'year', 100)) {
     const x = X(t);
     el('line', { x1: x, x2: x, y1: h - 8, y2: h, stroke: '#999' }, svg);
-    const label = el('text', { x: x + 3, y: h - 10, 'font-size': 10, fill: '#555' }, svg);
-    label.textContent = tickLabel(t, step);
-  }
-  const minor = step / 5;
-  if (minor * pxPerMs >= 4) {
-    for (let t = Math.ceil(t0 / minor) * minor; t <= t1; t += minor) {
-      if (t % step === 0) continue;
-      const x = X(t);
-      el('line', { x1: x, x2: x, y1: h - 4, y2: h, stroke: '#bbb' }, svg);
-    }
-  }
-  // Верхний уровень — даты: подпись на каждой полуночи зоны шкалы в виде.
-  const day = 86400e3;
-  const shift = scaleMin() * 60e3;
-  for (let t = Math.ceil((t0 + shift) / day) * day - shift; t <= t1; t += day) {
-    const x = X(t);
+    labelIfFit(x, String(wallParts(t).y));
     el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#999' }, svg);
-    const w = wallParts(t);
-    const label = el('text', { x: x + 3, y: 10, 'font-size': 10, fill: '#333' }, svg);
-    label.textContent = `${w.p(w.d)}.${w.p(w.mo)}`;
+  }
+  if (span / 10 < 1000 * 365 * DAY && 10 * 365 * DAY * pxPerMs >= 4) {
+    for (const t of calStarts(t0, t1, shift, 'year', 10)) {
+      const x = X(t);
+      el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#ddd' }, svg);
+    }
   }
 }
 
