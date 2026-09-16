@@ -47,13 +47,64 @@ schedule "Автобусный парк" {
 }
 `;
 
-// Библиотеки для `use` (путь — как в исходнике). v1: вшиты, позже — выбор файлов.
-const LIBS = JSON.stringify([
-  ["libs/route_lib.cyclo", "const MORNING = 6;\n\npred commute(at) = morning(at) or evening(at);\n"],
-]);
+// Виртуальная ФС: активный файл — в редакторе, остальные уходят в `use`
+// (путь — как в исходнике). Между перезагрузками — localStorage.
+const FS_KEY = 'cyclo.playground.fs.v1';
+const MAIN = 'main.cyclo';
+const ROUTE_LIB = 'libs/route_lib.cyclo';
+const ROUTE_LIB_SRC = 'const MORNING = 6;\n\npred commute(at) = morning(at) or evening(at);\n';
+
+let files = new Map();
+let activePath = MAIN;
+
+function seedFs() {
+  files = new Map([[MAIN, DEFAULT_SRC], [ROUTE_LIB, ROUTE_LIB_SRC]]);
+  activePath = MAIN;
+}
+
+function saveFs() {
+  try {
+    localStorage.setItem(FS_KEY, JSON.stringify({ active: activePath, files: [...files] }));
+  } catch {
+    // Квота/приватный режим — сессия живёт в памяти.
+  }
+}
+
+function loadFs() {
+  seedFs();
+  let raw = null;
+  try {
+    raw = localStorage.getItem(FS_KEY);
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  try {
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.files) || data.files.length === 0) return;
+    const next = new Map();
+    for (const [p, t] of data.files) {
+      if (typeof p === 'string' && p && typeof t === 'string') next.set(p, t);
+    }
+    if (next.size === 0) return;
+    files = next;
+    if (typeof data.active === 'string' && files.has(data.active)) activePath = data.active;
+    else activePath = [...files.keys()][0];
+  } catch {
+    // Битый JSON — остаёмся на сиде.
+  }
+}
+
+function libsJson() {
+  return JSON.stringify([...files].filter(([p]) => p !== activePath));
+}
+
+function syncActiveToFs() {
+  files.set(activePath, editor.state.doc.toString());
+}
 
 // --- подсветка cyclo (зеркало cyclo_lexer.py / grammar.pest) ---
-const DECLARATION = new Set(["schedule","use","const","fun","pred","time_const","point","actions","attrs","cycle","routine","root_cycle","start_time","duration","reverse"]);
+const DECLARATION = new Set(["schedule","use","const","fun","pred","time_const","point","actions","attrs","cycle","routine","root_cycle","start_time","duration","reverse","timezone"]);
 const MODIFIER = new Set(["repeat","fill","until","gaps","and","or","not","floordiv","floormod"]);
 const BOOL = new Set(["true","false"]);
 
@@ -128,13 +179,66 @@ const errorLineField = StateField.define({
 const NS = 'http://www.w3.org/2000/svg';
 const startEl = document.getElementById('start');
 const endEl = document.getElementById('end');
+const qzEl = document.getElementById('qz');
+const tzEl = document.getElementById('tz');
 const errEl = document.getElementById('error');
 const svg = document.getElementById('timeline');
 const tbody = document.getElementById('events');
 
+// Две зоны: запрос — кадр окна движка (Наивно — стены из файла,
+// UTC/±HH:MM — явный пояс окна), шкала — только подписи и ось.
+// Движок зон с DST не знает — только фикс-офсеты.
+{
+  const p2 = (n) => String(n).padStart(2, '0');
+  const label = (m) => m === 0 ? 'UTC' : `UTC${m > 0 ? '+' : '-'}${p2(Math.floor(Math.abs(m) / 60))}:${p2(Math.abs(m) % 60)}`;
+  const fill = (select) => {
+    for (let m = -12 * 60; m <= 14 * 60; m += 30) {
+      const o = document.createElement('option');
+      o.value = String(m);
+      o.textContent = label(m);
+      select.appendChild(o);
+    }
+  };
+  const naive = document.createElement('option');
+  naive.value = 'naive';
+  naive.textContent = 'Наивно';
+  naive.selected = true;
+  qzEl.appendChild(naive);
+  fill(qzEl);
+  fill(tzEl);
+  // Шкала по умолчанию — системная зона браузера (к ближайшим 30 мин),
+  // иначе UTC. Запрос по умолчанию — Наивно.
+  const sys = Math.min(840, Math.max(-720, Math.round(-new Date().getTimezoneOffset() / 30) * 30));
+  tzEl.value = String(sys);
+}
+function scaleMin() { return +tzEl.value || 0; }
+function querySuffix() {
+  // Наивно — без суффикса: движок читает окно в кадре файла.
+  // UTC — явный Z, остальное — ±HH:MM.
+  if (qzEl.value === 'naive') return '';
+  const m = +qzEl.value || 0;
+  if (m === 0) return 'Z';
+  const p2 = (n) => String(n).padStart(2, '0');
+  const sign = m > 0 ? '+' : '-';
+  const a = Math.abs(m);
+  return `${sign}${p2(Math.floor(a / 60))}:${p2(a % 60)}`;
+}
+// Стена (мс + сдвиг зоны) как UTC-компоненты — единый показ зоны.
+function wallParts(ms) {
+  const d = new Date(ms + scaleMin() * 60e3);
+  const p = (n) => String(n).padStart(2, '0');
+  return {
+    y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(),
+    h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(),
+    p,
+  };
+}
+
+loadFs();
+
 const editor = new EditorView({
   state: EditorState.create({
-    doc: DEFAULT_SRC,
+    doc: files.get(activePath) ?? '',
     extensions: [
       lineNumbers(),
       highlightActiveLineGutter(),
@@ -153,6 +257,124 @@ const editor = new EditorView({
 
 function getSrc() { return editor.state.doc.toString(); }
 
+// --- файловый сайдбар ---
+const filesEl = document.getElementById('files');
+
+function renderFiles() {
+  filesEl.innerHTML = '';
+  for (const p of files.keys()) {
+    const li = document.createElement('li');
+    li.textContent = p;
+    if (p === activePath) li.classList.add('active');
+    li.title = p === activePath ? 'активный файл (в редакторе)' : 'открыть в редакторе';
+    li.addEventListener('click', () => switchFile(p));
+    li.addEventListener('dblclick', () => renameFile(p));
+    filesEl.appendChild(li);
+  }
+}
+
+function switchFile(p) {
+  if (p === activePath || !files.has(p)) return;
+  syncActiveToFs();
+  activePath = p;
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: files.get(p) },
+  });
+  saveFs();
+  renderFiles();
+  clearErrorLine();
+}
+
+function normPath(p) {
+  return p.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function renameFile(p) {
+  const next = prompt('Новый путь файла', p);
+  if (next === null) return;
+  const q = normPath(next);
+  if (!q || q === p) return;
+  if (files.has(q) && !confirm(`Файл ${q} уже есть. Перезаписать?`)) return;
+  syncActiveToFs();
+  const entries = [...files].map(([k, v]) => [k === p ? q : k, k === p ? files.get(p) : v]);
+  files = new Map(entries);
+  if (activePath === p) activePath = q;
+  saveFs();
+  renderFiles();
+}
+
+function addFiles(list) {
+  let changed = false;
+  const reads = [...list].map((f) => new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve([f.name, String(r.result ?? '')]);
+    r.onerror = () => resolve(null);
+    r.readAsText(f);
+  }));
+  Promise.all(reads).then((items) => {
+    for (const it of items) {
+      if (!it) continue;
+      const q = normPath(it[0]);
+      if (!q) continue;
+      if (files.has(q) && !confirm(`Файл ${q} уже есть. Перезаписать?`)) continue;
+      files.set(q, it[1]);
+      changed = true;
+    }
+    if (changed) {
+      saveFs();
+      renderFiles();
+    }
+  });
+}
+
+document.getElementById('file-new').addEventListener('click', () => {
+  const name = prompt('Путь нового файла', 'libs/new_lib.cyclo');
+  if (name === null) return;
+  const q = normPath(name);
+  if (!q) return;
+  if (files.has(q)) {
+    switchFile(q);
+    return;
+  }
+  syncActiveToFs();
+  files.set(q, '');
+  saveFs();
+  renderFiles();
+  switchFile(q);
+});
+document.getElementById('file-add').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', (ev) => {
+  addFiles(ev.target.files);
+  ev.target.value = '';
+});
+document.getElementById('file-del').addEventListener('click', () => {
+  if (files.size <= 1) {
+    alert('Последний файл удалить нельзя.');
+    return;
+  }
+  if (!confirm(`Удалить ${activePath}?`)) return;
+  files.delete(activePath);
+  activePath = [...files.keys()][0];
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: files.get(activePath) },
+  });
+  saveFs();
+  renderFiles();
+  clearErrorLine();
+});
+filesEl.parentElement.addEventListener('dragover', (ev) => ev.preventDefault());
+filesEl.parentElement.addEventListener('drop', (ev) => {
+  ev.preventDefault();
+  if (ev.dataTransfer?.files?.length) addFiles(ev.dataTransfer.files);
+});
+window.addEventListener('beforeunload', () => {
+  syncActiveToFs();
+  saveFs();
+});
+renderFiles();
+
 function selectLine(n) {
   if (n < 1 || n > editor.state.doc.lines) return;
   const line = editor.state.doc.line(n);
@@ -168,17 +390,17 @@ function clearErrorLine() {
   editor.dispatch({ effects: errorLineEffect.of(null) });
 }
 
-// Окно по умолчанию — сегодня/завтра (UTC-день: движок наивный, parseTime
-// считает ввод через Date.UTC). Вшитые в HTML январские даты протухают,
-// как только в редактор вставляют неянварское расписание (ноль событий
-// при живом движке) — поэтому дефолт всегда динамический.
+// Окно по умолчанию — сегодня/завтра в зоне шкалы. Вшитые в HTML январские
+// даты протухают, как только в редактор вставляют неянварское расписание
+// (ноль событий при живом движке) — поэтому дефолт всегда динамический.
 {
-  const now = new Date(Date.now());
-  const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const p = (n) => String(n).padStart(2, '0');
+  const shift = scaleMin() * 60e3;
+  const nowWall = Date.now() + shift;
+  const now = new Date(nowWall);
+  const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - shift;
   const iso = (ms) => {
-    const d = new Date(ms);
-    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T00:00`;
+    const w = wallParts(ms);
+    return `${w.y}-${w.p(w.mo)}-${w.p(w.d)}T00:00`;
   };
   startEl.value = iso(day);
   endEl.value = iso(day + 86400e3);
@@ -193,17 +415,27 @@ let lastRes = null;
 let fetchTimer = null;
 
 function parseTime(s) {
-  // Наивный ISO8601 без таймзоны — как мс epoch (движок время наивное).
-  // Секунды опциональны: datetime-local отдаёт без них.
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?$/);
+  // Позиция строки движка на шкале — буквально, как есть:
+  // наивная стена — стеной в зоне шкалы, с суффиксом Z/±HH:MM — инстант
+  // (стена минус офсет). Секунды опциональны: datetime-local без них.
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/);
   if (!m) return NaN;
-  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), m[7] ? +m[7].slice(1).padEnd(3, '0') : 0);
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), m[7] ? +m[7].slice(1).padEnd(3, '0') : 0);
+  const z = m[8];
+  if (!z) return wall - scaleMin() * 60e3;
+  if (z === 'Z') return wall;
+  const sign = z[0] === '+' ? 1 : -1;
+  const off = sign * (+z.slice(1, 3) * 60 + +z.slice(4, 6));
+  return wall - off * 60e3;
 }
 
 function windowInput(elm) {
-  // datetime-local отдаёт без секунд — движок хочет полные.
+  // datetime-local отдаёт стену без секунд и зоны: достраиваем полные
+  // секунды и суффикс зоны запроса (или ничего для Наивно) — движок
+  // разберёт окно в своём кадре и вернёт время как есть.
   const v = elm.value;
-  return v.length === 16 ? v + ':00' : v;
+  const full = v.length === 16 ? v + ':00' : v;
+  return full + querySuffix();
 }
 
 function el(name, attrs, parent) {
@@ -218,9 +450,11 @@ function run() {
   clearErrorLine();
   tbody.innerHTML = '';
   svg.innerHTML = '';
+  syncActiveToFs();
+  saveFs();
   let env;
   try {
-    env = JSON.parse(expand_timeline(getSrc(), windowInput(startEl), windowInput(endEl), LIBS));
+    env = JSON.parse(expand_timeline(getSrc(), windowInput(startEl), windowInput(endEl), libsJson()));
   } catch (e) {
     errEl.textContent = 'клей WASM: ' + e;
     return;
@@ -255,9 +489,10 @@ function ensureData() {
   const span = tView.t1 - tView.t0;
   const s = Math.floor((tView.t0 - span) / 1000) * 1000;
   const e = Math.ceil((tView.t1 + span) / 1000) * 1000;
+  syncActiveToFs();
   let env;
   try {
-    env = JSON.parse(expand_timeline(getSrc(), formatTime(s), formatTime(e), LIBS));
+    env = JSON.parse(expand_timeline(getSrc(), formatTime(s), formatTime(e), libsJson()));
   } catch {
     return;
   }
@@ -272,11 +507,11 @@ function scheduleFetch() {
 }
 
 function formatTime(ms) {
-  // Границы докачки — с точностью до секунд.
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` +
-    `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  // Границы докачки — стена в зоне шкалы с суффиксом зоны запроса,
+  // с точностью до секунд.
+  const w = wallParts(ms);
+  return `${w.y}-${w.p(w.mo)}-${w.p(w.d)}` +
+    `T${w.p(w.h)}:${w.p(w.mi)}:${w.p(w.s)}${querySuffix()}`;
 }
 
 // Шаг линейки: первый, при котором подписи не ближе 70px.
@@ -289,10 +524,9 @@ function chooseStep(spanMs, pxPerMs) {
 }
 
 function tickLabel(ms, step) {
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, '0');
-  const hm = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-  return step >= 12 * 3600e3 ? `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)} ${hm}` : hm;
+  const w = wallParts(ms);
+  const hm = `${w.p(w.h)}:${w.p(w.mi)}`;
+  return step >= 12 * 3600e3 ? `${w.p(w.d)}.${w.p(w.mo)} ${hm}` : hm;
 }
 
 function drawRuler(t0, t1, X, W, h) {
@@ -313,15 +547,15 @@ function drawRuler(t0, t1, X, W, h) {
       el('line', { x1: x, x2: x, y1: h - 4, y2: h, stroke: '#bbb' }, svg);
     }
   }
-  // Верхний уровень — даты: подпись на каждой полуночи UTC в виде.
+  // Верхний уровень — даты: подпись на каждой полуночи зоны шкалы в виде.
   const day = 86400e3;
-  for (let t = Math.ceil(t0 / day) * day; t <= t1; t += day) {
+  const shift = scaleMin() * 60e3;
+  for (let t = Math.ceil((t0 + shift) / day) * day - shift; t <= t1; t += day) {
     const x = X(t);
     el('line', { x1: x, x2: x, y1: 0, y2: h, stroke: '#999' }, svg);
-    const d = new Date(t);
-    const p = (n) => String(n).padStart(2, '0');
+    const w = wallParts(t);
     const label = el('text', { x: x + 3, y: 10, 'font-size': 10, fill: '#333' }, svg);
-    label.textContent = `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)}`;
+    label.textContent = `${w.p(w.d)}.${w.p(w.mo)}`;
   }
 }
 
@@ -518,9 +752,152 @@ function initNav() {
   });
 }
 
+// --- настраиваемая раскладка: пропорции сплиттерами, видимость тогглами ---
+const LAYOUT_KEY = 'cyclo.playground.layout.v1';
+const PANELS = ['tl', 'files', 'editor', 'table'];
+
+function defaultLayout() {
+  return {
+    tlH: Math.max(200, Math.round(window.innerHeight * 5 / 12)),
+    filesW: 220,
+    tableW: null, // null — гибкая доля, число — px после первого драга
+    hidden: [],
+  };
+}
+
+let layout = defaultLayout();
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // Квота/приватный режим — раскладка живёт до перезагрузки.
+  }
+}
+
+function loadLayout() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(LAYOUT_KEY);
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  try {
+    const d = JSON.parse(raw);
+    if (!d || typeof d !== 'object') return;
+    if (Number.isFinite(d.tlH) && d.tlH > 0) layout.tlH = d.tlH;
+    if (Number.isFinite(d.filesW) && d.filesW > 0) layout.filesW = d.filesW;
+    if (d.tableW === null || (Number.isFinite(d.tableW) && d.tableW > 0)) layout.tableW = d.tableW;
+    if (Array.isArray(d.hidden)) layout.hidden = d.hidden.filter((k) => PANELS.includes(k));
+    if (layout.hidden.length >= PANELS.length) layout.hidden = [];
+  } catch {
+    // Битый JSON — остаёмся на дефолте.
+  }
+}
+
+const tlEl = svg;
+const splitTl = document.getElementById('split-tl');
+const filepanelEl = document.getElementById('filepanel');
+const editorEl = document.getElementById('editor');
+const tablewrapEl = document.getElementById('tablewrap');
+const splitFe = document.getElementById('split-fe');
+const splitEt = document.getElementById('split-et');
+const bottomEl = document.getElementById('bottom');
+
+const isHidden = (k) => layout.hidden.includes(k);
+
+function applyLayout() {
+  const show = { tl: !isHidden('tl'), files: !isHidden('files'), editor: !isHidden('editor'), table: !isHidden('table') };
+  tlEl.style.display = show.tl ? '' : 'none';
+  splitTl.style.display = show.tl ? '' : 'none';
+  filepanelEl.style.display = show.files ? '' : 'none';
+  editorEl.style.display = show.editor ? '' : 'none';
+  tablewrapEl.style.display = show.table ? '' : 'none';
+  splitFe.style.display = show.files && show.editor ? '' : 'none';
+  splitEt.style.display = show.editor && show.table ? '' : 'none';
+  document.body.style.gridTemplateRows = show.tl
+    ? `${Math.round(layout.tlH)}px 8px auto minmax(0,1fr)`
+    : `auto minmax(0,1fr)`;
+  const cols = [];
+  if (show.files) cols.push(`${Math.round(layout.filesW)}px`);
+  if (show.files && show.editor) cols.push('8px');
+  if (show.editor) cols.push('minmax(0,1fr)');
+  if (show.editor && show.table) cols.push('8px');
+  if (show.table) cols.push(layout.tableW === null ? 'minmax(0,1fr)' : `${Math.round(layout.tableW)}px`);
+  bottomEl.style.gridTemplateColumns = cols.join(' ');
+  for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table']]) {
+    const b = document.getElementById(id);
+    const on = !isHidden(k);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
+}
+
+// Драг сплиттера: дельта — от старта драга, база — снапшот на pointerdown.
+// (Прибавлять полную дельту к уже изменённому значению нельзя —
+// размер убегал бы от мыши с ускорением.)
+function makeDraggable(gutter, onDrag) {
+  gutter.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    gutter.setPointerCapture(ev.pointerId);
+    const x0 = ev.clientX, y0 = ev.clientY;
+    const snap = { ...layout };
+    const move = (e) => onDrag(e.clientX - x0, e.clientY - y0, snap);
+    const up = () => {
+      gutter.removeEventListener('pointermove', move);
+      gutter.removeEventListener('pointerup', up);
+      gutter.removeEventListener('pointercancel', up);
+      saveLayout();
+    };
+    gutter.addEventListener('pointermove', move);
+    gutter.addEventListener('pointerup', up);
+    gutter.addEventListener('pointercancel', up);
+  });
+}
+
+makeDraggable(splitTl, (dx, dy, snap) => {
+  layout.tlH = Math.min(Math.max(snap.tlH + dy, 120), window.innerHeight - 200);
+  applyLayout();
+});
+makeDraggable(splitFe, (dx, dy, snap) => {
+  layout.filesW = Math.min(Math.max(snap.filesW + dx, 140), window.innerWidth - 400);
+  applyLayout();
+});
+makeDraggable(splitEt, (dx, dy, snap) => {
+  const base = (snap.tableW ?? tablewrapEl.getBoundingClientRect().width) || 400;
+  layout.tableW = Math.min(Math.max(base - dx, 200), window.innerWidth - 400);
+  applyLayout();
+});
+
+for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table']]) {
+  document.getElementById(id).addEventListener('click', () => {
+    if (isHidden(k)) {
+      layout.hidden = layout.hidden.filter((x) => x !== k);
+    } else {
+      // Хотя бы одна панель обязана остаться видимой.
+      if (layout.hidden.length >= PANELS.length - 1) return;
+      layout.hidden.push(k);
+    }
+    saveLayout();
+    applyLayout();
+  });
+}
+document.getElementById('layout-reset').addEventListener('click', () => {
+  layout = defaultLayout();
+  saveLayout();
+  applyLayout();
+});
+loadLayout();
+applyLayout();
+
 document.getElementById('run').addEventListener('click', run);
 startEl.addEventListener('change', run);
 endEl.addEventListener('change', run);
+// Смена зоны запроса меняет кадр окна движка, смена шкалы — только
+// показ: в обоих случаях пересчитать.
+qzEl.addEventListener('change', run);
+tzEl.addEventListener('change', run);
 initNav();
 
 await init();
