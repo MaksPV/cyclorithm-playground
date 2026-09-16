@@ -752,6 +752,144 @@ function initNav() {
   });
 }
 
+// --- настраиваемая раскладка: пропорции сплиттерами, видимость тогглами ---
+const LAYOUT_KEY = 'cyclo.playground.layout.v1';
+const PANELS = ['tl', 'files', 'editor', 'table'];
+
+function defaultLayout() {
+  return {
+    tlH: Math.max(200, Math.round(window.innerHeight * 5 / 12)),
+    filesW: 220,
+    tableW: null, // null — гибкая доля, число — px после первого драга
+    hidden: [],
+  };
+}
+
+let layout = defaultLayout();
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // Квота/приватный режим — раскладка живёт до перезагрузки.
+  }
+}
+
+function loadLayout() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(LAYOUT_KEY);
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  try {
+    const d = JSON.parse(raw);
+    if (!d || typeof d !== 'object') return;
+    if (Number.isFinite(d.tlH) && d.tlH > 0) layout.tlH = d.tlH;
+    if (Number.isFinite(d.filesW) && d.filesW > 0) layout.filesW = d.filesW;
+    if (d.tableW === null || (Number.isFinite(d.tableW) && d.tableW > 0)) layout.tableW = d.tableW;
+    if (Array.isArray(d.hidden)) layout.hidden = d.hidden.filter((k) => PANELS.includes(k));
+    if (layout.hidden.length >= PANELS.length) layout.hidden = [];
+  } catch {
+    // Битый JSON — остаёмся на дефолте.
+  }
+}
+
+const tlEl = svg;
+const splitTl = document.getElementById('split-tl');
+const filepanelEl = document.getElementById('filepanel');
+const editorEl = document.getElementById('editor');
+const tablewrapEl = document.getElementById('tablewrap');
+const splitFe = document.getElementById('split-fe');
+const splitEt = document.getElementById('split-et');
+const bottomEl = document.getElementById('bottom');
+
+const isHidden = (k) => layout.hidden.includes(k);
+
+function applyLayout() {
+  const show = { tl: !isHidden('tl'), files: !isHidden('files'), editor: !isHidden('editor'), table: !isHidden('table') };
+  tlEl.style.display = show.tl ? '' : 'none';
+  splitTl.style.display = show.tl ? '' : 'none';
+  filepanelEl.style.display = show.files ? '' : 'none';
+  editorEl.style.display = show.editor ? '' : 'none';
+  tablewrapEl.style.display = show.table ? '' : 'none';
+  splitFe.style.display = show.files && show.editor ? '' : 'none';
+  splitEt.style.display = show.editor && show.table ? '' : 'none';
+  document.body.style.gridTemplateRows = show.tl
+    ? `${Math.round(layout.tlH)}px 8px auto minmax(0,1fr)`
+    : `auto minmax(0,1fr)`;
+  const cols = [];
+  if (show.files) cols.push(`${Math.round(layout.filesW)}px`);
+  if (show.files && show.editor) cols.push('8px');
+  if (show.editor) cols.push('minmax(0,1fr)');
+  if (show.editor && show.table) cols.push('8px');
+  if (show.table) cols.push(layout.tableW === null ? 'minmax(0,1fr)' : `${Math.round(layout.tableW)}px`);
+  bottomEl.style.gridTemplateColumns = cols.join(' ');
+  for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table']]) {
+    const b = document.getElementById(id);
+    const on = !isHidden(k);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
+}
+
+// Драг сплиттера: стартовые позиции на pointerdown, живьём — в layout + apply.
+function makeDraggable(gutter, onDrag) {
+  gutter.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    gutter.setPointerCapture(ev.pointerId);
+    const x0 = ev.clientX, y0 = ev.clientY;
+    const move = (e) => onDrag(e.clientX - x0, e.clientY - y0);
+    const up = () => {
+      gutter.removeEventListener('pointermove', move);
+      gutter.removeEventListener('pointerup', up);
+      gutter.removeEventListener('pointercancel', up);
+      saveLayout();
+    };
+    gutter.addEventListener('pointermove', move);
+    gutter.addEventListener('pointerup', up);
+    gutter.addEventListener('pointercancel', up);
+  });
+}
+
+makeDraggable(splitTl, (dx, dy) => {
+  layout.tlH = Math.min(Math.max(layout.tlH + dy, 120), window.innerHeight - 200);
+  applyLayout();
+});
+makeDraggable(splitFe, (dx) => {
+  layout.filesW = Math.min(Math.max(layout.filesW + dx, 140), window.innerWidth - 400);
+  applyLayout();
+});
+makeDraggable(splitEt, (dx) => {
+  if (layout.tableW === null) {
+    layout.tableW = tablewrapEl.getBoundingClientRect().width || 400;
+  }
+  layout.tableW = Math.min(Math.max(layout.tableW - dx, 200), window.innerWidth - 400);
+  applyLayout();
+});
+
+for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table']]) {
+  document.getElementById(id).addEventListener('click', () => {
+    if (isHidden(k)) {
+      layout.hidden = layout.hidden.filter((x) => x !== k);
+    } else {
+      // Хотя бы одна панель обязана остаться видимой.
+      if (layout.hidden.length >= PANELS.length - 1) return;
+      layout.hidden.push(k);
+    }
+    saveLayout();
+    applyLayout();
+  });
+}
+document.getElementById('layout-reset').addEventListener('click', () => {
+  layout = defaultLayout();
+  saveLayout();
+  applyLayout();
+});
+loadLayout();
+applyLayout();
+
 document.getElementById('run').addEventListener('click', run);
 startEl.addEventListener('change', run);
 endEl.addEventListener('change', run);
