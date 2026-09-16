@@ -33,6 +33,7 @@
   #files li:hover { background: #eee; }
   #files li.active { background: #cde6ff; font-weight: bold; }
   #filepanel .hint { color: #555; font-size: 11px; margin-top: 6px; }
+  #filepanel .links { margin-top: 8px; padding-top: 6px; border-top: 1px solid #ddd; font-size: 12px; display: flex; gap: 10px; }
   #filepanel .row { margin-bottom: 4px; }
   .tablewrap { overflow: auto; min-height: 0; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -79,6 +80,11 @@
       <button id="file-del" title="Удалить активный файл">Удалить</button>
     </div>
     <div class="hint">Активный файл — в редакторе, остальные уходят в <code>use</code>. Пути — как в исходнике; переименование — даблкликом. Хранится локально (localStorage).</div>
+    <div class="links">
+      <a href="https://MaksPV.github.io/cyclorithm/" target="_blank" rel="noopener">Вики</a>
+      <a href="https://github.com/MaksPV/cyclorithm" target="_blank" rel="noopener">Движок</a>
+      <a href="https://github.com/MaksPV/cyclorithm-playground" target="_blank" rel="noopener">Плейграунд</a>
+    </div>
   </div>
   <div class="split-v" id="split-fe" title="Ширина панели файлов"></div>
   <div id="editor"></div>
