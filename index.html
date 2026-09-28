@@ -25,6 +25,7 @@
   #timeline { width: 100%; height: 100%; border: 1px solid #ccc; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #error { color: #b00; white-space: pre-wrap; }
+  #notice { color: #a60; }
   .bottom { display: grid; grid-template-columns: 220px 1fr 1fr; gap: 4px; min-height: 0; }
   #filepanel { border: 1px solid #ccc; overflow: auto; min-height: 0; padding: 4px; font-size: 13px; }
   #filepanel h3 { margin: 2px 0 6px; font-size: 13px; }
@@ -66,13 +67,25 @@
   <button class="tgl on" id="tgl-files" title="Показать/скрыть файлы">Файлы</button>
   <button class="tgl on" id="tgl-editor" title="Показать/скрыть редактор">Редактор</button>
   <button class="tgl on" id="tgl-table" title="Показать/скрыть таблицу">Таблица</button>
+  <button class="tgl" id="tgl-synth" title="Включить/выключить плагин-синтезатор (по умолчанию выключен)">Синт</button>
   <button id="layout-reset" title="Вернуть пропорции и видимость по умолчанию">Сброс раскладки</button>
   <span id="error"></span>
+  <span id="notice"></span>
+</div>
+<div class="row" id="synth" style="display:none">
+  <span title="Плагин: события note_on/note_off звучат осциллятором строго в realtime; тембр голоса — из point_attrs"><b>Синт</b> <small>realtime</small></span>
+  <button id="synth-play" title="Играть поток от начала окна запроса realtime (расписание бесконечно)">▶ Play</button>
+  <button id="synth-stop" title="Остановить звук">■ Stop</button>
+  <label>громкость <input id="synth-vol" type="range" min="0" max="100" value="70" title="Общий мастер; громкость голоса — из point_attrs.volume"></label>
+  <span id="synth-status" style="color:#555"></span>
 </div>
 <div class="bottom" id="bottom">
   <div id="filepanel">
     <h3>Файлы</h3>
     <ul id="files"></ul>
+    <h3>Библиотеки <button id="libs-reload" title="Перечитать папку libs/ с хоста">обновить</button></h3>
+    <ul id="hostlibs"></ul>
+    <div class="hint" id="hostlibs-hint"></div>
     <div class="row">
       <button id="file-new" title="Новый файл">+ Новый</button>
       <button id="file-add" title="Загрузить .cyclo с диска">Загрузить</button>
