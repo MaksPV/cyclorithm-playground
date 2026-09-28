@@ -19,7 +19,7 @@
 - Движок — чужой: `cyclorithm-core` из `MaksPV/cyclorithm`, ветка `dev`
   (фасад `core::api`: `run_schedule`/`run_timeline`/`next_steps`, `Diag`).
   Старый путь `core::schedule` удалён в ядре — не использовать.
-- `app.js` — вшитые `LIBS` для `use`, выбора файлов нет (ограничение v1).
+- Библиотеки для `use` — файлы из папки `libs/` + `libs/manifest.json`, грузятся fetch'ем при старте (не вшиты); свои файлы — через панель/localStorage.
 
 ## Ветки и деплой
 

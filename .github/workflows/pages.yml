@@ -31,9 +31,10 @@ jobs:
         run: |
           mkdir -p dist
           cp index.html app.js dist/
-          cp -r pkg dist/
+          cp -r pkg plugins libs dist/
           # если есть доп. статика — добавить сюда
           test -f dist/pkg/playground.js
+          test -f dist/libs/manifest.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
