@@ -1,6 +1,8 @@
-import init, { expand_timeline } from './pkg/playground.js';
+import init, { expand_timeline, next_steps } from './pkg/playground.js';
+// Синт — настоящий плагин: грузится лениво через dynamic import только
+// когда его включают кнопкой «Синт» (см. setSynthOn ниже).
 import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, keymap, Decoration } from '@codemirror/view';
-import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state';
 import { StreamLanguage, syntaxHighlighting, defaultHighlightStyle, HighlightStyle } from '@codemirror/language';
 import { history, defaultKeymap, historyKeymap } from '@codemirror/commands';
 import { tags } from '@lezer/highlight';
@@ -49,16 +51,15 @@ schedule "Автобусный парк" {
 
 // Виртуальная ФС: активный файл — в редакторе, остальные уходят в `use`
 // (путь — как в исходнике). Между перезагрузками — localStorage.
+// Библиотеки из папки libs/ репозитория в ФС не хранятся: их отдаёт хост
+// (см. loadHostLibs ниже), источник правды — файлы на диске.
 const FS_KEY = 'cyclo.playground.fs.v1';
 const MAIN = 'main.cyclo';
-const ROUTE_LIB = 'libs/route_lib.cyclo';
-const ROUTE_LIB_SRC = 'const MORNING = 6;\n\npred commute(at) = morning(at) or evening(at);\n';
-
 let files = new Map();
 let activePath = MAIN;
 
 function seedFs() {
-  files = new Map([[MAIN, DEFAULT_SRC], [ROUTE_LIB, ROUTE_LIB_SRC]]);
+  files = new Map([[MAIN, DEFAULT_SRC]]);
   activePath = MAIN;
 }
 
@@ -96,11 +97,113 @@ function loadFs() {
 }
 
 function libsJson() {
-  return JSON.stringify([...files].filter(([p]) => p !== activePath));
+  // Свои файлы (кроме активного) + библиотеки с хоста; при коллизии пути
+  // побеждает хост (см. loadHostLibs).
+  const own = [...files].filter(([p]) => p !== activePath && !hostLibs.has(p));
+  return JSON.stringify([...own, ...hostLibs]);
+}
+
+// --- библиотеки с хоста ---
+// Файлы из папки libs/ репозитория: manifest.json перечисляет пути,
+// app.js подтягивает их fetch'ем при старте (и по кнопке «обновить»).
+// Источник правды — хост: в localStorage не хранятся, в редакторе не
+// правятся (панель показывает их отдельно, только чтение). Свои файлы
+// с теми же путями движку не отдаются — переименуй, если такое случилось.
+const LIBS_MANIFEST = 'libs/manifest.json';
+let hostLibs = new Map(); // path -> text
+let hostLibsError = '';
+
+async function loadHostLibs() {
+  hostLibs = new Map();
+  hostLibsError = '';
+  try {
+    const m = await (await fetch(LIBS_MANIFEST, { cache: 'no-store' })).json();
+    const list = Array.isArray(m) ? m : m.libs;
+    if (!Array.isArray(list)) throw new Error('manifest: нет списка libs');
+    await Promise.all(list.filter((p) => typeof p === 'string' && p).map(async (p) => {
+      const r = await fetch(p, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`${p}: HTTP ${r.status}`);
+      hostLibs.set(p, await r.text());
+    }));
+  } catch (e) {
+    hostLibsError = `с хоста не загрузились (${e.message}); use на них даст ошибку движка`;
+  }
+  // Миграция: старые вшитые копии либ в сейвах больше не нужны.
+  let switched = false;
+  for (const p of hostLibs.keys()) {
+    if (files.delete(p) && p === activePath) switched = true;
+  }
+  if (switched) {
+    activePath = files.has(MAIN) ? MAIN : [...files.keys()][0];
+    editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: files.get(activePath) ?? '' },
+    });
+  }
+  saveFs();
+  renderFiles();
+  renderHostLibs();
+}
+
+function renderHostLibs() {
+  const box = document.getElementById('hostlibs');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const p of hostLibs.keys()) {
+    const li = document.createElement('li');
+    li.textContent = p;
+    if (p === viewingHost) li.classList.add('active');
+    li.title = p === viewingHost
+      ? 'открыта в редакторе (только чтение)'
+      : 'открыть для просмотра (только чтение)';
+    li.addEventListener('click', () => openHostLib(p));
+    box.appendChild(li);
+  }
+  const hint = document.getElementById('hostlibs-hint');
+  if (!hint) return;
+  hint.textContent = hostLibsError ||
+    (viewingHost ? `открыта ${viewingHost} (только чтение)` : `${hostLibs.size} шт. с хоста, только чтение`);
 }
 
 function syncActiveToFs() {
+  // Открыта библиотека с хоста — в свои файлы ничего не пишем.
+  if (viewingHost) return;
   files.set(activePath, editor.state.doc.toString());
+}
+
+// Просмотр библиотеки с хоста: оверлей поверх своих файлов.
+// activePath остаётся на последнем своём файле; файловые операции
+// (новый/удалить/загрузить) его не трогают.
+let viewingHost = null; // путь либы или null
+
+function setEditable(on) {
+  editor.dispatch({
+    effects: editableConf.reconfigure(EditorView.editable.of(on)),
+  });
+}
+
+function openHostLib(p) {
+  if (!hostLibs.has(p)) return;
+  syncActiveToFs();
+  viewingHost = p;
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: hostLibs.get(p) },
+  });
+  setEditable(false);
+  clearErrorLine();
+  renderFiles();
+  renderHostLibs();
+}
+
+function closeHostView() {
+  if (!viewingHost) return;
+  viewingHost = null;
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: files.get(activePath) ?? '' },
+  });
+  setEditable(true);
+  clearErrorLine();
+  renderFiles();
+  renderHostLibs();
 }
 
 // --- подсветка cyclo (зеркало cyclo_lexer.py / grammar.pest) ---
@@ -182,8 +285,16 @@ const endEl = document.getElementById('end');
 const qzEl = document.getElementById('qz');
 const tzEl = document.getElementById('tz');
 const errEl = document.getElementById('error');
+const noticeEl = document.getElementById('notice');
 const svg = document.getElementById('timeline');
 const tbody = document.getElementById('events');
+
+// Предел событий на окно/вид: защита от падения вкладки при отдалении.
+// Перегруженное окно не разворачиваем (замер next_steps) и просим зум.
+const MAX_EVENTS = 2000;
+const MAX_SPAN = 1000 * 365 * 86400e3; // предохранитель отдаления (1000 лет)
+let overflow = false;
+function setNotice(t) { noticeEl.textContent = t || ''; }
 
 // Две зоны: запрос — кадр окна движка (Наивно — стены из файла,
 // UTC/±HH:MM — явный пояс окна), шкала — только подписи и ось.
@@ -236,10 +347,14 @@ function wallParts(ms) {
 
 loadFs();
 
+// Переключатель «только чтение» для просмотра библиотек с хоста.
+const editableConf = new Compartment();
+
 const editor = new EditorView({
   state: EditorState.create({
     doc: files.get(activePath) ?? '',
     extensions: [
+      editableConf.of(EditorView.editable.of(true)),
       lineNumbers(),
       highlightActiveLineGutter(),
       highlightActiveLine(),
@@ -265,8 +380,8 @@ function renderFiles() {
   for (const p of files.keys()) {
     const li = document.createElement('li');
     li.textContent = p;
-    if (p === activePath) li.classList.add('active');
-    li.title = p === activePath ? 'активный файл (в редакторе)' : 'открыть в редакторе';
+    if (!viewingHost && p === activePath) li.classList.add('active');
+    li.title = !viewingHost && p === activePath ? 'активный файл (в редакторе)' : 'открыть в редакторе';
     li.addEventListener('click', () => switchFile(p));
     li.addEventListener('dblclick', () => renameFile(p));
     filesEl.appendChild(li);
@@ -274,6 +389,8 @@ function renderFiles() {
 }
 
 function switchFile(p) {
+  // Клик по своему файлу (даже активному) выходит из просмотра либы.
+  if (viewingHost) closeHostView();
   if (p === activePath || !files.has(p)) return;
   syncActiveToFs();
   activePath = p;
@@ -290,6 +407,7 @@ function normPath(p) {
 }
 
 function renameFile(p) {
+  closeHostView();
   const next = prompt('Новый путь файла', p);
   if (next === null) return;
   const q = normPath(next);
@@ -350,6 +468,7 @@ document.getElementById('file-input').addEventListener('change', (ev) => {
   ev.target.value = '';
 });
 document.getElementById('file-del').addEventListener('click', () => {
+  closeHostView();
   if (files.size <= 1) {
     alert('Последний файл удалить нельзя.');
     return;
@@ -413,6 +532,33 @@ let dataWin = null;
 let fetched = null;
 let lastRes = null;
 let fetchTimer = null;
+// Плагин-синтезатор: null пока выключен в меню; включается лениво через
+// dynamic import (setSynthOn). В draw() — только хук synthApi?.update(...).
+let synthApi = null;
+
+// Вкл/выкл синта. Включение впервые подгружает plugins/synth.js и
+// инициализирует плагин; выключение останавливает звук и отпускает API.
+async function setSynthOn(on) {
+  if (on) {
+    if (synthApi) return;
+    const m = await import('./plugins/synth.js');
+    synthApi = m.initSynth({
+      parseTime,
+      nextEvents: (from, withinMs, n) =>
+        JSON.parse(next_steps(getSrc(), from, withinMs, n, libsJson())),
+      startFrom: () => windowInput(startEl),
+    });
+    redraw(); // обновить статус плагина по текущим данным
+  } else {
+    if (!synthApi) return;
+    try {
+      synthApi.stop();
+    } catch {
+      // Плагин не должен ронять переключение.
+    }
+    synthApi = null;
+  }
+}
 
 function parseTime(s) {
   // Позиция строки движка на шкале — буквально, как есть:
@@ -445,60 +591,121 @@ function el(name, attrs, parent) {
   return n;
 }
 
+function showDiag(d) {
+  let text = (d.code ? d.code + ' ' : '') + d.text;
+  if (d.line) {
+    text += `\n(строка ${d.line}${d.col ? ', колонка ' + d.col : ''})`;
+    selectLine(d.line);
+  }
+  errEl.textContent = text;
+}
+
+// Замер окна «ленивым» next_steps: перегруженное окно не разворачиваем.
+// Возврат: { overflow } | { events } | { diag } | { error }.
+function probeWindow(src, fromStr, withinMs) {
+  let env;
+  try {
+    env = JSON.parse(next_steps(src, fromStr, withinMs, MAX_EVENTS + 1, libsJson()));
+  } catch (e) {
+    return { error: 'клей WASM: ' + e };
+  }
+  if (!env.ok) return { diag: env.diag };
+  const events = env.result.events || [];
+  return events.length > MAX_EVENTS ? { overflow: true } : { events };
+}
+
+// Разворот окна с замером: сверх MAX_EVENTS движку не отдаём (нет данных —
+// нет и строки на миллионы событий, которая роняет вкладку).
+function fetchWindow(src, fromStr, endStr, withinMs) {
+  const probe = probeWindow(src, fromStr, withinMs);
+  if (probe.error || probe.diag || probe.overflow) return probe;
+  let env;
+  try {
+    env = JSON.parse(expand_timeline(src, fromStr, endStr, libsJson()));
+  } catch (e) {
+    return { error: 'клей WASM: ' + e };
+  }
+  if (!env.ok) return { diag: env.diag };
+  return { result: env.result };
+}
+
+function drawOverflow() {
+  lastRes = { events: [], spans: [] };
+  setNotice(`Событий больше ${MAX_EVENTS} — увеличьте масштаб (сузьте окно)`);
+  draw(lastRes);
+}
+
 function run() {
   errEl.textContent = '';
+  setNotice('');
   clearErrorLine();
   tbody.innerHTML = '';
   svg.innerHTML = '';
   syncActiveToFs();
   saveFs();
-  let env;
-  try {
-    env = JSON.parse(expand_timeline(getSrc(), windowInput(startEl), windowInput(endEl), libsJson()));
-  } catch (e) {
-    errEl.textContent = 'клей WASM: ' + e;
+  const src = getSrc();
+  const startStr = windowInput(startEl);
+  const endStr = windowInput(endEl);
+  const w0 = parseTime(startStr);
+  const w1 = parseTime(endStr);
+  const out = fetchWindow(src, startStr, endStr, w1 - w0);
+  if (out.error) {
+    errEl.textContent = out.error;
     return;
   }
-  if (!env.ok) {
-    const d = env.diag;
-    let text = (d.code ? d.code + ' ' : '') + d.text;
-    if (d.line) {
-      text += `\n(строка ${d.line}${d.col ? ', колонка ' + d.col : ''})`;
-      selectLine(d.line);
-    }
-    errEl.textContent = text;
+  if (out.diag) {
+    showDiag(out.diag);
     return;
   }
-  const w0 = parseTime(windowInput(startEl));
-  const w1 = parseTime(windowInput(endEl));
+  if (out.overflow) {
+    dataWin = { t0: w0, t1: w1 };
+    fetched = { t0: w0, t1: w1 };
+    tView = { t0: w0, t1: w1 };
+    overflow = true;
+    drawOverflow();
+    return;
+  }
   if (!(w0 < w1)) {
     errEl.textContent = 'окно пустое: end должен быть позже start';
     return;
   }
+  overflow = false;
   dataWin = { t0: w0, t1: w1 };
   fetched = { t0: w0, t1: w1 };
   tView = { t0: w0, t1: w1 };
-  draw(env.result);
+  draw(out.result);
 }
 
 // Докачка: если вид вылез за посчитанное — пересчитать окно
 // view ± 100% запас. Вызывается с дебаунсом после жестов.
 function ensureData() {
-  if (!tView || !fetched || !lastRes) return;
-  if (tView.t0 >= fetched.t0 && tView.t1 <= fetched.t1) return;
+  if (!tView) return;
+  // Перегруженный вид не считаем «покрытым»: любой зум/пан пробует снова.
+  if (!overflow && fetched && lastRes && tView.t0 >= fetched.t0 && tView.t1 <= fetched.t1) return;
   const span = tView.t1 - tView.t0;
   const s = Math.floor((tView.t0 - span) / 1000) * 1000;
   const e = Math.ceil((tView.t1 + span) / 1000) * 1000;
   syncActiveToFs();
-  let env;
-  try {
-    env = JSON.parse(expand_timeline(getSrc(), formatTime(s), formatTime(e), libsJson()));
-  } catch {
+  const out = fetchWindow(getSrc(), formatTime(s), formatTime(e), e - s);
+  if (out.error) {
+    errEl.textContent = out.error;
     return;
   }
-  if (!env.ok) return;
+  if (out.diag) {
+    showDiag(out.diag);
+    return;
+  }
+  if (out.overflow) {
+    errEl.textContent = '';
+    fetched = { t0: s, t1: e };
+    overflow = true;
+    drawOverflow();
+    return;
+  }
+  overflow = false;
+  setNotice('');
   fetched = { t0: s, t1: e };
-  draw(env.result);
+  draw(out.result);
 }
 
 function scheduleFetch() {
@@ -703,10 +910,21 @@ function draw(res) {
   // Подписи действий у точек — только если не слипаются с соседом.
   let lastLabelX = -Infinity;
   // Таблица — только видимые события (данные могут быть шире вида).
-  const inView = res.events.filter((e) => {
+  let inView = res.events.filter((e) => {
     const t = parseTime(e.time);
     return t >= t0 && t < t1;
   });
+  // Предохранитель отрисовки: сверх MAX_EVENTS узлы не плодим, просим зум.
+  if (inView.length > MAX_EVENTS) {
+    inView = inView.slice(0, MAX_EVENTS);
+    setNotice(`Показаны первые ${MAX_EVENTS} событий — увеличьте масштаб (сузьте окно)`);
+  }
+  // Синт-плагин: только статус по видимому окну (звук — потоком из next_steps).
+  try {
+    synthApi?.update(inView, { t0, t1 });
+  } catch {
+    // Плагин не должен ронять отрисовку таймлайна.
+  }
   for (const e of inView) {
     const ti = trackOf.get(e.span.cycle + '|' + e.span.start + '|' + e.span.end);
     const x = X(parseTime(e.time));
@@ -752,7 +970,8 @@ function draw(res) {
 const MIN_SPAN = 60e3;
 function normView() {
   const c = (tView.t0 + tView.t1) / 2;
-  const s = Math.max(tView.t1 - tView.t0, MIN_SPAN);
+  // MAX_SPAN — молчаливый предохранитель CPU на сверхразреженных окнах.
+  const s = Math.min(Math.max(tView.t1 - tView.t0, MIN_SPAN), MAX_SPAN);
   tView = { t0: c - s / 2, t1: c + s / 2 };
 }
 
@@ -837,15 +1056,17 @@ function initNav() {
 }
 
 // --- настраиваемая раскладка: пропорции сплиттерами, видимость тогглами ---
-const LAYOUT_KEY = 'cyclo.playground.layout.v1';
-const PANELS = ['tl', 'files', 'editor', 'table'];
+// v2: добавилась панель 'synth' (по умолчанию скрыта); старые раскладки
+// не знают о ней и неверно показали бы плагин включённым — сбрасываем.
+const LAYOUT_KEY = 'cyclo.playground.layout.v2';
+const PANELS = ['tl', 'files', 'editor', 'table', 'synth'];
 
 function defaultLayout() {
   return {
     tlH: Math.max(200, Math.round(window.innerHeight * 5 / 12)),
     filesW: 220,
     tableW: null, // null — гибкая доля, число — px после первого драга
-    hidden: [],
+    hidden: ['synth'], // синт-плагин по умолчанию выключен
   };
 }
 
@@ -888,21 +1109,28 @@ const tablewrapEl = document.getElementById('tablewrap');
 const splitFe = document.getElementById('split-fe');
 const splitEt = document.getElementById('split-et');
 const bottomEl = document.getElementById('bottom');
+const synthEl = document.getElementById('synth');
 
 const isHidden = (k) => layout.hidden.includes(k);
 
 function applyLayout() {
-  const show = { tl: !isHidden('tl'), files: !isHidden('files'), editor: !isHidden('editor'), table: !isHidden('table') };
+  const show = { tl: !isHidden('tl'), files: !isHidden('files'), editor: !isHidden('editor'), table: !isHidden('table'), synth: !isHidden('synth') };
   tlEl.style.display = show.tl ? '' : 'none';
   splitTl.style.display = show.tl ? '' : 'none';
+  synthEl.style.display = show.synth ? '' : 'none';
   filepanelEl.style.display = show.files ? '' : 'none';
   editorEl.style.display = show.editor ? '' : 'none';
   tablewrapEl.style.display = show.table ? '' : 'none';
   splitFe.style.display = show.files && show.editor ? '' : 'none';
   splitEt.style.display = show.editor && show.table ? '' : 'none';
-  document.body.style.gridTemplateRows = show.tl
-    ? `${Math.round(layout.tlH)}px 8px auto minmax(0,1fr)`
-    : `auto minmax(0,1fr)`;
+  // Строки body: таймлайн, сплиттер, ряд кнопок, ряд синта, низ.
+  // Ряд синта скрыт (display:none) — его трек из сетки убираем.
+  const rows = [];
+  if (show.tl) rows.push(`${Math.round(layout.tlH)}px`, '8px');
+  rows.push('auto');
+  if (show.synth) rows.push('auto');
+  rows.push('minmax(0,1fr)');
+  document.body.style.gridTemplateRows = rows.join(' ');
   const cols = [];
   if (show.files) cols.push(`${Math.round(layout.filesW)}px`);
   if (show.files && show.editor) cols.push('8px');
@@ -910,7 +1138,7 @@ function applyLayout() {
   if (show.editor && show.table) cols.push('8px');
   if (show.table) cols.push(layout.tableW === null ? 'minmax(0,1fr)' : `${Math.round(layout.tableW)}px`);
   bottomEl.style.gridTemplateColumns = cols.join(' ');
-  for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table']]) {
+  for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table'], ['tgl-synth', 'synth']]) {
     const b = document.getElementById(id);
     const on = !isHidden(k);
     b.classList.toggle('on', on);
@@ -954,7 +1182,7 @@ makeDraggable(splitEt, (dx, dy, snap) => {
   applyLayout();
 });
 
-for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table']]) {
+for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 'editor'], ['tgl-table', 'table'], ['tgl-synth', 'synth']]) {
   document.getElementById(id).addEventListener('click', () => {
     if (isHidden(k)) {
       layout.hidden = layout.hidden.filter((x) => x !== k);
@@ -965,6 +1193,7 @@ for (const [id, k] of [['tgl-tl', 'tl'], ['tgl-files', 'files'], ['tgl-editor', 
     }
     saveLayout();
     applyLayout();
+    if (k === 'synth') void setSynthOn(!isHidden('synth'));
   });
 }
 document.getElementById('layout-reset').addEventListener('click', () => {
@@ -983,6 +1212,15 @@ endEl.addEventListener('change', run);
 qzEl.addEventListener('change', run);
 tzEl.addEventListener('change', run);
 initNav();
-
+document.getElementById('libs-reload').addEventListener('click', async () => {
+  await loadHostLibs();
+  run();
+});
 await init();
+// Библиотеки с хоста — до первого разворота, иначе `use` не резолвится.
+await loadHostLibs();
 run();
+// Синт-плагин по умолчанию выключен; если в сохранённой раскладке он был
+// включён — подгрузить (поток событий из бесконечного расписания через
+// next_steps; стартовый курсор — начало окна запроса).
+if (!isHidden('synth')) await setSynthOn(true);

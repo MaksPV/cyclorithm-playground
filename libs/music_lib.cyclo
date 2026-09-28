@@ -1,0 +1,182 @@
+// Музыкальная библиотека плейграунда. Подключение: use "libs/music_lib.cyclo";
+// Даёт: ноты C2–B5 (частоты в Гц, бемольные имена), высоты ударных,
+// интервалы fun (квинты/терции прямо в {"freq": ...}), гаммы массивами,
+// сетки времени GRID4/GRID8/GRID16 (такт 2000мс = 120 BPM), WALTZ3 (3/4),
+// PHRASE_2/4/8/16.
+// НЕ даёт (движок запрещает schedule в импорте): point, routine, cycle.
+// Тембры и рутины — в файле песни; свои const нот при подключении удалить
+// (коллизия имён), слоты рутин писать под имена q*/g*/x*/w*/t*.
+
+const C2 = 65.41;
+const Db2 = 69.30;
+const D2 = 73.42;
+const Eb2 = 77.78;
+const E2 = 82.41;
+const F2 = 87.31;
+const Gb2 = 92.50;
+const G2 = 98.00;
+const Ab2 = 103.83;
+const A2 = 110.00;
+const Bb2 = 116.54;
+const B2 = 123.47;
+const C3 = 130.81;
+const Db3 = 138.59;
+const D3 = 146.83;
+const Eb3 = 155.56;
+const E3 = 164.81;
+const F3 = 174.61;
+const Gb3 = 185.00;
+const G3 = 196.00;
+const Ab3 = 207.65;
+const A3 = 220.00;
+const Bb3 = 233.08;
+const B3 = 246.94;
+const C4 = 261.63;
+const Db4 = 277.18;
+const D4 = 293.66;
+const Eb4 = 311.13;
+const E4 = 329.63;
+const F4 = 349.23;
+const Gb4 = 369.99;
+const G4 = 392.00;
+const Ab4 = 415.30;
+const A4 = 440.00;
+const Bb4 = 466.16;
+const B4 = 493.88;
+const C5 = 523.25;
+const Db5 = 554.37;
+const D5 = 587.33;
+const Eb5 = 622.25;
+const E5 = 659.26;
+const F5 = 698.46;
+const Gb5 = 739.99;
+const G5 = 783.99;
+const Ab5 = 830.61;
+const A5 = 880.00;
+const Bb5 = 932.33;
+const B5 = 987.77;
+
+// Высоты ударных.
+const KICK_F = 55;
+const SNARE_F = 180;
+const HAT_F = 9000;
+const HAT2_F = 9500;
+const CLAP_F = 1000;
+const TOM_LO_F = 110;
+const TOM_HI_F = 147;
+const RIM_F = 800;
+const CRASH_F = 6500;
+const RIDE_F = 5200;
+
+// Интервалы вверх от любой частоты: FIFTH(A2) — квинта от ля.
+// Am тремя голосами: A2 + MIN3(A2) + FIFTH(A2).
+fun OCT(x) = x * 2;
+fun OCTD(x) = x / 2;
+fun SEMI(x) = x * 1.059463;
+fun TONE(x) = x * 1.122462;
+fun MIN3(x) = x * 1.189207;
+fun MAJ3(x) = x * 1.259921;
+fun FOURTH(x) = x * 1.334840;
+fun FIFTH(x) = x * 1.498307;
+fun MIN6(x) = x * 1.587401;
+fun MAJ6(x) = x * 1.681793;
+fun MIN7(x) = x * 1.781797;
+fun MAJ7(x) = x * 1.887749;
+
+// Гаммы: доступ по индексу — {"freq": AM_PENT[4]}.
+const AM_MIN = [A2, B2, C3, D3, E3, F3, G3, A3, C4, D4, E4, G4, A4];
+const AM_PENT = [A2, C3, D3, E3, G3, A3, C4, D4, E4, G4, A4];
+const C_MAJ = [C3, D3, E3, F3, G3, A3, B3, C4, D4, E4, F4, G4, A4, B4, C5];
+
+// Такт 2000мс (120 BPM, 4/4): четверти.
+time_const GRID4 duration = 2000ms {
+  q1: 0ms;
+  q2: 500ms;
+  q3: 1000ms;
+  q4: 1500ms;
+}
+
+// Такт 2000мс: восьмые.
+time_const GRID8 duration = 2000ms {
+  g1: 0ms;
+  g2: 250ms;
+  g3: 500ms;
+  g4: 750ms;
+  g5: 1000ms;
+  g6: 1250ms;
+  g7: 1500ms;
+  g8: 1750ms;
+}
+
+// Такт 2000мс: шестнадцатые.
+time_const GRID16 duration = 2000ms {
+  x1: 0ms;
+  x2: 125ms;
+  x3: 250ms;
+  x4: 375ms;
+  x5: 500ms;
+  x6: 625ms;
+  x7: 750ms;
+  x8: 875ms;
+  x9: 1000ms;
+  x10: 1125ms;
+  x11: 1250ms;
+  x12: 1375ms;
+  x13: 1500ms;
+  x14: 1625ms;
+  x15: 1750ms;
+  x16: 1875ms;
+}
+
+// Вальс 3/4 (120 BPM): такт 1500мс.
+time_const WALTZ3 duration = 1500ms {
+  w1: 0ms;
+  w2: 500ms;
+  w3: 1000ms;
+}
+
+// Фраза из 2 тактов (4s).
+time_const PHRASE_2 duration = 4s {
+  t1: 0s;
+  t2: 2s;
+}
+
+// Фраза из 4 тактов (8s).
+time_const PHRASE_4 duration = 8s {
+  t1: 0s;
+  t2: 2s;
+  t3: 4s;
+  t4: 6s;
+}
+
+// Фраза из 8 тактов (16s).
+time_const PHRASE_8 duration = 16s {
+  t1: 0s;
+  t2: 2s;
+  t3: 4s;
+  t4: 6s;
+  t5: 8s;
+  t6: 10s;
+  t7: 12s;
+  t8: 14s;
+}
+
+// Фраза из 16 тактов (32s).
+time_const PHRASE_16 duration = 32s {
+  t1: 0s;
+  t2: 2s;
+  t3: 4s;
+  t4: 6s;
+  t5: 8s;
+  t6: 10s;
+  t7: 12s;
+  t8: 14s;
+  t9: 16s;
+  t10: 18s;
+  t11: 20s;
+  t12: 22s;
+  t13: 24s;
+  t14: 26s;
+  t15: 28s;
+  t16: 30s;
+}

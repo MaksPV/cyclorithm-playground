@@ -1,12 +1,16 @@
-//! WASM-обёртка над движком для плейграунда (v1 — визуализатор).
+//! WASM-обёртка над движком для плейграунда (v1 — визуализатор + синт).
 //!
 //! Экспорты `expand_it` / `expand_timeline`: исходник + окно + библиотеки
 //! (`use` из памяти) → JSON-конверт `{"ok":true,"result":{...}}` или
 //! `{"ok":false,"diag":{"kind","code","line","col","text"}}`.
 //! `expand_timeline` добавляет спаны: у каждого события — `span`,
 //! плюс distinct-список `spans` для прямоугольников таймлайна.
+//! `next_steps` — поток для бесконечного расписания: первые `n` событий из
+//! `[from, from+within)` плюс `result.next` (ISO-курсор за последним
+//! событием, в зоне движка) для следующего вызова.
 
-use cyclorithm_core::api::{Diag, run_schedule, run_timeline};
+use cyclorithm_core::api::{Diag, next_steps_zoned, run_schedule, run_timeline};
+use cyclorithm_core::datetime::{format_datetime_tz, parse_datetime_zoned};
 use wasm_bindgen::prelude::*;
 
 type Run = fn(&str, &str, &str, &[(&str, &str)]) -> Result<String, Diag>;
@@ -24,30 +28,100 @@ pub fn expand_timeline(src: &str, start: &str, end: &str, libs_json: &str) -> St
     call(run_timeline, src, start, end, libs_json)
 }
 
-fn call(run: Run, src: &str, start: &str, end: &str, libs_json: &str) -> String {
-    let libs: Vec<(String, String)> = match serde_json::from_str(libs_json) {
+/// Следующие `n` событий от `from` в пределах `within_ms` — поток для
+/// бесконечного расписания. `from` — ISO-строка (как окно запроса),
+/// зона берётся из её суффикса. В результат добавляется `"next"` —
+/// ISO-курсор (в зоне движка, +1 мс за последним событием) для
+/// следующего вызова: он снимает с JS арифметику зон и не даёт
+/// повторять события на стыке батчей.
+#[wasm_bindgen]
+pub fn next_steps(src: &str, from: &str, within_ms: f64, n: u32, libs_json: &str) -> String {
+    let libs = match parse_libs(libs_json) {
+        Ok(v) => v,
+        Err(text) => return usage_env(text),
+    };
+    let refs = refs_of(&libs);
+    let (from_ms, from_zone) = match parse_datetime_zoned(from) {
         Ok(v) => v,
         Err(e) => {
             return serde_json::json!({
                 "ok": false,
-                "diag": {"kind": "usage", "code": null, "line": null, "col": null,
-                         "text": format!("bad libs_json: {e}")},
+                "diag": {"kind": "valid", "code": e.code, "line": null, "col": null,
+                         "text": e.to_string()},
             })
             .to_string();
         }
     };
-    let refs: Vec<(&str, &str)> = libs
-        .iter()
+    let within = if within_ms.is_finite() && within_ms > 0.0 {
+        within_ms as i64
+    } else {
+        0
+    };
+    match next_steps_zoned(src, from_ms, from_zone, within, n as usize, &refs) {
+        Ok(json) => {
+            let mut v: serde_json::Value = match serde_json::from_str(&json) {
+                Ok(v) => v,
+                Err(e) => return usage_env(format!("bad core json: {e}")),
+            };
+            // Зона движка — из уже отформатированного им `from`.
+            let effective = v
+                .get("from")
+                .and_then(|x| x.as_str())
+                .and_then(|s| parse_datetime_zoned(s).ok())
+                .map(|(_, z)| z)
+                .unwrap_or(from_zone);
+            let next_ms = v
+                .get("events")
+                .and_then(|x| x.as_array())
+                .and_then(|xs| xs.last())
+                .and_then(|e| e.get("time"))
+                .and_then(|t| t.as_str())
+                .and_then(|s| parse_datetime_zoned(s).ok())
+                .map(|(ms, _)| ms.saturating_add(1))
+                .unwrap_or_else(|| from_ms.saturating_add(within));
+            v["next"] = serde_json::Value::String(format_datetime_tz(next_ms, effective));
+            format!("{{\"ok\":true,\"result\":{v}}}")
+        }
+        Err(d) => diag_env(d),
+    }
+}
+
+fn parse_libs(libs_json: &str) -> Result<Vec<(String, String)>, String> {
+    serde_json::from_str(libs_json).map_err(|e| format!("bad libs_json: {e}"))
+}
+
+fn refs_of(libs: &[(String, String)]) -> Vec<(&str, &str)> {
+    libs.iter()
         .map(|(name, text)| (name.as_str(), text.as_str()))
-        .collect();
+        .collect()
+}
+
+fn usage_env(text: String) -> String {
+    serde_json::json!({
+        "ok": false,
+        "diag": {"kind": "usage", "code": null, "line": null, "col": null, "text": text},
+    })
+    .to_string()
+}
+
+fn diag_env(d: Diag) -> String {
+    serde_json::json!({
+        "ok": false,
+        "diag": {"kind": d.kind, "code": d.code, "line": d.line, "col": d.col,
+                 "text": d.text},
+    })
+    .to_string()
+}
+
+fn call(run: Run, src: &str, start: &str, end: &str, libs_json: &str) -> String {
+    let libs = match parse_libs(libs_json) {
+        Ok(v) => v,
+        Err(text) => return usage_env(text),
+    };
+    let refs = refs_of(&libs);
     match run(src, start, end, &refs) {
         Ok(json) => format!("{{\"ok\":true,\"result\":{json}}}"),
-        Err(d) => serde_json::json!({
-            "ok": false,
-            "diag": {"kind": d.kind, "code": d.code, "line": d.line, "col": d.col,
-                     "text": d.text},
-        })
-        .to_string(),
+        Err(d) => diag_env(d),
     }
 }
 
@@ -211,5 +285,46 @@ mod tests {
         assert_eq!(spans[1]["cycle"], "HOP");
         assert_eq!(v["result"]["events"][0]["span"]["cycle"], "HOP");
         assert_eq!(v["result"]["events"][2]["span"]["cycle"], "root_cycle");
+    }
+
+    #[wasm_bindgen_test]
+    fn next_envelope_streams_and_advances_cursor() {
+        // Бесконечный root_cycle: два события в сутки, курсор — за последним.
+        let out = next_steps(MINI, "2026-01-09T00:00:00", 86_400_000.0, 10, "[]");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 2);
+        assert_eq!(v["result"]["next"], "2026-01-09T06:20:00.001");
+        // Второй батч с курсора: 10–11 января — выходные, ближайшие события
+        // в понедельник 12-го; повторов за курсором (06:20:00.000) нет.
+        let out2 = next_steps(
+            MINI,
+            v["result"]["next"].as_str().unwrap(),
+            3.0 * 86_400_000.0,
+            10,
+            "[]",
+        );
+        let v2: serde_json::Value = serde_json::from_str(&out2).unwrap();
+        let events = v2["result"]["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["time"], "2026-01-12T06:00:00");
+    }
+
+    #[wasm_bindgen_test]
+    fn next_envelope_reports_bad_from() {
+        let out = next_steps(MINI, "не дата", 86_400_000.0, 1, "[]");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["diag"]["code"], "invalid-datetime");
+    }
+
+    #[wasm_bindgen_test]
+    fn next_caps_at_n_on_long_window() {
+        // Два года будних событий: n режет выборку — замер огромного окна
+        // остаётся дешёвым (без разворота в миллионы событий).
+        let out = next_steps(MINI, "2026-01-01T00:00:00", 2.0 * 365.0 * 86_400_000.0, 501, "[]");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 501);
     }
 }
