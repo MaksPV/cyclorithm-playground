@@ -7,7 +7,7 @@ WASM-плейграунд для Cyclorithm (v1 — визуализатор): �
 окно выбирается мышью, ошибки — панелью с выделением строки.
 
 Движок — `cyclorithm-core` из основного репозитория
-(`https://github.com/MaksPV/cyclorithm`, ветка `dev` — интеграция, `main` — релиз, фасад `core::api`).
+(`https://github.com/MaksPV/cyclorithm`, фасад `core::api`). Версия ядра закреплена коммитом в `Cargo.toml` и `Cargo.lock`.
 Контракт: `expand_it(src, start, end, libs_json)` →
 `{"ok":true,"result":{...}}` / `{"ok":false,"diag":{...}}`;
 `expand_timeline` — то же плюс спаны (`event.span`, distinct-список `spans`);

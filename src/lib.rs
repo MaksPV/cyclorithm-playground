@@ -220,6 +220,69 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn timeline_avoids_table_calls_when_filling_routine_gaps() {
+        let src = r#"
+            time_const T duration = 5h { reserved: 2h -> WORK(); }
+            schedule "Добивка в рутине" {
+                point P { actions = [big, small, work]; }
+                cycle BIG duration = 2h { 0h: P.big(); }
+                cycle SMALL duration = 30m { 0h: P.small(); }
+                cycle WORK duration = 1h { 0h: P.work(); }
+                routine DAY(TC) { 0h: fill gaps BIG(); 0h: fill gaps SMALL(); }
+                root_cycle start_time = "2026-01-01T00:00:00", duration = 5h {
+                    0h: DAY(T);
+                }
+            }
+        "#;
+        let output = expand_timeline(src, "2026-01-01T00:00:00", "2026-01-01T05:00:00", "[]");
+        let envelope: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(envelope["ok"], true, "{envelope}");
+        let events = envelope["result"]["events"].as_array().unwrap();
+        let timings: Vec<_> = events
+            .iter()
+            .map(|event| {
+                (
+                    event["action"].as_str().unwrap(),
+                    event["time"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            timings,
+            [
+                ("big", "2026-01-01T00:00:00"),
+                ("work", "2026-01-01T02:00:00"),
+                ("big", "2026-01-01T03:00:00"),
+            ]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_expands_launch_dependencies_and_relative_offsets() {
+        let src = r#"
+            schedule "Зависимые запуски" {
+                point P { actions = [start, work, finish]; }
+                cycle WARMUP duration = 1h { 0h: P.start(); }
+                cycle WORK duration = 2h { 0h: P.work(); }
+                root_cycle start_time = "2026-01-01T00:00:00", duration = 24h {
+                    0h: WARMUP() as W;
+                    after W: WORK();
+                    +30m: P.finish();
+                }
+            }
+        "#;
+        let output = expand_timeline(src, "2026-01-01T00:00:00", "2026-01-02T00:00:00", "[]");
+        let envelope: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(envelope["ok"], true, "{envelope}");
+        let events = envelope["result"]["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[1]["time"], "2026-01-01T01:00:00");
+        assert_eq!(events[1]["span"]["cycle"], "WORK");
+        assert_eq!(events[2]["time"], "2026-01-01T03:30:00");
+        assert_eq!(events[2]["action"], "finish");
+    }
+
+    #[wasm_bindgen_test]
     fn naive_window_inherits_file_zone_walls_stand() {
         // Файл с городом + наивное окно: движок читает наивное как стены
         // в зоне файла (кадр, PR #39), а отвечает в зоне файла с суффиксом.
@@ -322,7 +385,13 @@ mod tests {
     fn next_caps_at_n_on_long_window() {
         // Два года будних событий: n режет выборку — замер огромного окна
         // остаётся дешёвым (без разворота в миллионы событий).
-        let out = next_steps(MINI, "2026-01-01T00:00:00", 2.0 * 365.0 * 86_400_000.0, 501, "[]");
+        let out = next_steps(
+            MINI,
+            "2026-01-01T00:00:00",
+            2.0 * 365.0 * 86_400_000.0,
+            501,
+            "[]",
+        );
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["result"]["events"].as_array().unwrap().len(), 501);
