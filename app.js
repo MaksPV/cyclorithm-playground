@@ -208,7 +208,7 @@ function closeHostView() {
 
 // --- подсветка cyclo (зеркало cyclo_lexer.py / grammar.pest) ---
 const DECLARATION = new Set(["schedule","use","const","fun","pred","time_const","point","actions","attrs","cycle","routine","root_cycle","start_time","duration","reverse","timezone"]);
-const MODIFIER = new Set(["repeat","fill","until","gaps","and","or","not","floordiv","floormod"]);
+const MODIFIER = new Set(["repeat","fill","until","gaps","pack","as","after","at","and","or","not","floordiv","floormod"]);
 const BOOL = new Set(["true","false"]);
 
 const cycloLanguage = StreamLanguage.define({

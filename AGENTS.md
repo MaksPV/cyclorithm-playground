@@ -1,55 +1,59 @@
-# AGENTS.md — cyclorithm-playground
+# Работа с репозиторием cyclorithm-playground
 
-## Главное правило (строже, чем в cyclorithm)
+## Публикация изменений
 
-- **Никаких push / PR / merge без показа результата владельцу.**
-  Порядок всегда такой: правки → локальные проверки → показать diff +
-  результаты проверок → ждать явного «пуш» / «пр» / «мерж».
-- Самовольный мерж запрещён даже при зелёном CI. Урок: PR #4 был
-  смержен без просьбы — так больше не делать.
-- В cyclorithm push/PR разрешены по слову «делай»; здесь — нет:
-  каждое действие с удалённым репозиторием только по прямому указанию.
+Сначала внесите правки, выполните локальные проверки и покажите владельцу
+diff и результаты. Для отправки ветки, открытия pull request и слияния
+требуется явное указание владельца. Зелёный CI сам по себе разрешения
+на слияние не даёт. Удаляйте ветку только по отдельной просьбе.
 
-## Источник правды
+`dev` — ветка интеграции, `main` — ветка публикации сайта. Правки
+готовьте в отдельных ветках от `dev`. Pull request открывайте через
+`gh` с целью `dev`. Для слияния используйте `gh pr merge --merge`.
 
-- Контракт фасада: `expand_it(src, start, end, libs_json)` →
-  `{"ok":true,"result":{...}}` / `{"ok":false,"diag":{kind,code,line,col,text}}`;
-  `expand_timeline` — то же плюс `event.span` и distinct-список `spans`.
-  Контракт описан в `README.md:9-13` — семантику не дублировать в коде.
-- Движок — чужой: `cyclorithm-core` из `MaksPV/cyclorithm`, ветка `dev`
-  (фасад `core::api`: `run_schedule`/`run_timeline`/`next_steps`, `Diag`).
-  Старый путь `core::schedule` удалён в ядре — не использовать.
-- Библиотеки для `use` — файлы из папки `libs/` + `libs/manifest.json`, грузятся fetch'ем при старте (не вшиты); свои файлы — через панель/localStorage.
+Отправка изменений в `main` запускает [сборку GitHub Pages](.github/workflows/pages.yml).
+В сборку входят `index.html`, `app.js`, WebAssembly-пакет `pkg/`,
+плагины и библиотеки.
 
-## Ветки и деплой
+## Контракты проекта
 
-- `dev` — интеграция, `main` — релизная. Фичи — отдельными ветками в `dev`.
-- Деплой сайта — только пушем в `main` (workflow `pages.yml`: сборка WASM
-  в CI, `index.html` + `app.js` + `pkg/` → GitHub Pages).
-- PR создавать с `base=dev` через `gh`; мерж — `--merge` и только по явному
-  указанию (см. главное правило). Ветки после мержа не удалять без просьбы.
+- Интерфейс WebAssembly описан в [README](README.md#интерфейс-webassembly).
+  Экспорты `expand_it`, `expand_timeline` и `next_steps` возвращают
+  JSON с результатом или объектом диагностики.
+- Ядро берётся из [Cyclorithm](https://github.com/MaksPV/cyclorithm) и
+  закреплено коммитом в `Cargo.toml` и `Cargo.lock`. Используйте
+  `cyclorithm_core::api` для вызова движка. Правила языка описаны
+  в документации Cyclorithm.
+- Библиотеки с сайта перечислены в `libs/manifest.json` и загружаются
+  при открытии страницы. Пользовательские файлы хранятся отдельно
+  в локальном хранилище браузера.
 
-## Проверки после правок (локально, до показа результата)
+## Проверки
 
-- `cargo check` (хост) + `cargo check --target wasm32-unknown-unknown`.
-- `wasm-bindgen` строго `=0.2.100` (версия в `Cargo.toml` = версии
-  `wasm-bindgen-cli`, иначе клей рассыплется); `edition = "2024"`,
-  `rust-version = "1.85"`.
-- Тесты — только под WASM: `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="wasm-bindgen-test-runner" cargo test --target wasm32-unknown-unknown`.
-- Ручная проверка — `./run.sh [PORT]` (сборка + клей + сервер на 8080).
+После правок проверьте сборку для хоста и `wasm32-unknown-unknown`,
+запустите тесты и откройте плейграунд в браузере:
+
+```sh
+cargo check --locked
+cargo check --locked --target wasm32-unknown-unknown
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test --locked --target wasm32-unknown-unknown
+./run.sh
+```
+
+WASM-тестам нужен Node.js. Версии `wasm-bindgen`,
+`wasm-bindgen-cli` и `wasm-bindgen-test-runner` должны совпадать.
+Текущая версия — `0.2.100`. В манифесте заданы редакция Rust 2024
+и `rust-version = "1.85"`. При выборе версии компилятора учитывайте
+также требования закреплённого коммита ядра.
+
+Каталоги `pkg/` и `target/` создаются при сборке. Используйте `run.sh`
+для их обновления. Если порт по умолчанию занят, согласуйте другой порт
+и передайте его скрипту, например `./run.sh 8090`.
 
 ## Коммиты
 
-- Сообщения — на русском, по содержимому, с суффиксом `, Muse Spark`
-  (суффикс — модель, которой сделан коммит).
-- Мелкими, по ходу работы; пуш — только по просьбе (см. главное правило).
-- Терминал неинтерактивный: `rebase --continue` и подобные — только
-  с `GIT_EDITOR=true` / `GIT_SEQUENCE_EDITOR=true`.
-
-## Ловушки
-
-- `pkg/` и `target/` — generated, руками не править (пересобираются `run.sh`).
-- Порт занят — не гадать, просить другой (`./run.sh 8090`).
-- Обновление `cyclorithm-core`: следить за `core::api` (урок: `schedule` →
-  `api`, `parser` → внутрь `core`, edition 2021 → 2024) — после `cargo update`
-  гнать обе проверки `check`.
+Делайте небольшие тематические коммиты. Пишите сообщения по-русски,
+добавляя в конце имя модели, которая внесла правку, через запятую.
+Для `rebase --continue` и подобных команд в неинтерактивном терминале
+задавайте `GIT_EDITOR=true` или `GIT_SEQUENCE_EDITOR=true`.
